@@ -53,11 +53,15 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /OrthographicCamera/);
   assert.match(page, /三维尺寸/);
   assert.match(page, /最近空间距离/);
-  assert.doesNotMatch(page, /EdgesGeometry/);
+  assert.match(page, /edgeGeometries = new Map/);
+  assert.match(page, /new THREE\.EdgesGeometry/);
+  assert.match(page, /sketchLineMaterial/);
   assert.match(page, /TransformControls/);
   assert.match(page, /OrbitControls/);
   assert.match(page, /aria-label="3D 室内设计画布"/);
   assert.match(page, /2D 平面/);
+  assert.match(page, /等轴测/);
+  assert.match(page, /蓝色.*红色.*绿色.*无色/s);
   assert.match(css, /@media \(max-width: 760px\)/);
   assert.match(layout, /summary_large_image/);
   assert.match(packageJson, /"three"/);
