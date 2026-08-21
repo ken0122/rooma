@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { AXES, measureSpatialRelationships, movementForClearance, scaleForDimension, type Axis3, type Bounds3, type Clearance, type Point3, type SpatialMetrics } from "@/lib/engine/spatial";
+import { RenderScheduler } from "@/lib/engine/render-scheduler";
 
 type ToolMode = "translate" | "rotate" | "scale";
 type ViewMode = "3D" | "2D";
@@ -132,10 +133,7 @@ export default function Home() {
     let current: THREE.Group | null = null;
     let serial = 10;
     let dragging = false;
-    let destroyed = false;
-    let renderFrameId = 0;
     let measurementTimer: ReturnType<typeof setTimeout> | null = null;
-    let shadowsDirty = true;
     let lastStatsPublish = 0;
     const undoStack: Array<{ object: THREE.Group; position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }> = [];
     const redoStack: typeof undoStack = [];
@@ -157,23 +155,21 @@ export default function Home() {
       pick: new THREE.MeshBasicMaterial({ visible: false }),
     };
 
-    const scheduleRender = (withShadows = false) => {
-      if (withShadows) shadowsDirty = true;
-      if (destroyed || renderFrameId) return;
-      renderFrameId = requestAnimationFrame(() => {
-        renderFrameId = 0;
-        const started = performance.now();
-        const cameraChanged = controls.update();
-        if (shadowsDirty) { renderer.shadowMap.needsUpdate = true; shadowsDirty = false; }
-        renderer.render(scene, activeCamera);
+    const renderScheduler = new RenderScheduler({
+      requestFrame: requestAnimationFrame,
+      cancelFrame: cancelAnimationFrame,
+      now: performance.now.bind(performance),
+      update: () => controls.update(),
+      refreshShadows: () => { renderer.shadowMap.needsUpdate = true; },
+      render: () => renderer.render(scene, activeCamera),
+      onFrame: ({ frameMs }) => {
         const now = performance.now();
-        if (now - lastStatsPublish > 250) {
-          lastStatsPublish = now;
-          setRenderStats({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, frameMs: now - started });
-        }
-        if (cameraChanged) scheduleRender(false);
-      });
-    };
+        if (now - lastStatsPublish <= 250) return;
+        lastStatsPublish = now;
+        setRenderStats({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, frameMs });
+      },
+    });
+    const scheduleRender = (withShadows = false) => renderScheduler.invalidate({ shadows: withShadows });
 
     const box = (w: number, h: number, d: number, x: number, y: number, z: number, parent: THREE.Group, role: "furniture" | "accent" | "wall" = "furniture") => {
       const mesh = new THREE.Mesh(geometry(`box:${w}:${h}:${d}`, () => new THREE.BoxGeometry(w, h, d)), materials[role]);
@@ -348,7 +344,7 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
-      destroyed = true; window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); resizeObserver.disconnect(); if (renderFrameId) cancelAnimationFrame(renderFrameId); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
+      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); resizeObserver.disconnect(); renderScheduler.dispose(); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
       const disposedGeometries = new Set<THREE.BufferGeometry>(); const disposedMaterials = new Set<THREE.Material>();
       scene.traverse(object => { const renderable = object as THREE.Mesh | THREE.Line | THREE.Sprite; if ("geometry" in renderable && renderable.geometry && !disposedGeometries.has(renderable.geometry)) { disposedGeometries.add(renderable.geometry); renderable.geometry.dispose(); } if ("material" in renderable && renderable.material) { const list = Array.isArray(renderable.material) ? renderable.material : [renderable.material]; list.forEach(material => { if (disposedMaterials.has(material)) return; disposedMaterials.add(material); const map = (material as THREE.MeshStandardMaterial).map; if (map) map.dispose(); material.dispose(); }); } });
       renderer.dispose(); renderer.domElement.remove(); controller.current = null;
