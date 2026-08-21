@@ -29,6 +29,7 @@ test("server-renders the ROOMA editor shell and social metadata", async () => {
   assert.match(html, /3D 室内设计画布/);
   assert.match(html, /主卫改造方案/);
   assert.match(html, /素材库/);
+  assert.match(html, /对象尺寸与空间关系/);
   assert.match(html, /property="og:image"/);
   assert.match(html, /og\.png/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
@@ -43,9 +44,16 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   ]);
 
   assert.match(page, /powerPreference:\s*"high-performance"/);
-  assert.match(page, /Math\.min\(window\.devicePixelRatio, 1\.75\)/);
+  assert.match(page, /Math\.min\(window\.devicePixelRatio, 1\.5\)/);
   assert.match(page, /requestAnimationFrame/);
   assert.match(page, /renderer\.dispose\(\)/);
+  assert.match(page, /renderer\.shadowMap\.autoUpdate = false/);
+  assert.match(page, /measureSpatialRelationships/);
+  assert.match(page, /movementForClearance/);
+  assert.match(page, /OrthographicCamera/);
+  assert.match(page, /三维尺寸/);
+  assert.match(page, /最近空间距离/);
+  assert.doesNotMatch(page, /EdgesGeometry/);
   assert.match(page, /TransformControls/);
   assert.match(page, /OrbitControls/);
   assert.match(page, /aria-label="3D 室内设计画布"/);
