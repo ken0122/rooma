@@ -128,6 +128,7 @@ export default function Home() {
 
     const selectable = new Set<THREE.Group>();
     const pickTargets = new Set<THREE.Mesh>();
+    const boundsCache = new Map<THREE.Group, THREE.Box3>();
     let current: THREE.Group | null = null;
     let serial = 10;
     let dragging = false;
@@ -208,6 +209,13 @@ export default function Home() {
       group.userData.pickProxy = proxy;
       pickTargets.add(proxy);
     };
+    const updateBounds = (group: THREE.Group) => {
+      group.updateWorldMatrix(true, true);
+      const bounds = boundsCache.get(group) ?? new THREE.Box3();
+      bounds.setFromObject(group);
+      boundsCache.set(group, bounds);
+      return bounds;
+    };
     const finishObject = (group: THREE.Group, kind: string, label: string, position: [number, number, number]) => {
       group.userData = { id: `${kind}-${serial++}`, kind, label, selectable: true };
       group.traverse(child => { child.userData.root = group; });
@@ -215,6 +223,7 @@ export default function Home() {
       group.position.set(...position);
       selectable.add(group);
       layout.add(group);
+      updateBounds(group);
       return group;
     };
     const makeObject = (kind: string, label: string, position: [number, number, number]) => {
@@ -284,9 +293,8 @@ export default function Home() {
       for (const clearance of spatial.clearances) { const start = center.clone(); const end = center.clone(); start[clearance.axis] = clearance.direction === "negative" ? min[clearance.axis] : max[clearance.axis]; end[clearance.axis] = clearance.referenceCoordinate; addMeasurementLine(start, end, colors[clearance.axis], clearance.distance.toFixed(2), 0.62); }
     };
     const getMetrics = (object: THREE.Group) => {
-      object.updateWorldMatrix(true, true);
-      const selectedBox = new THREE.Box3().setFromObject(object);
-      const obstacles = [...selectable].filter(candidate => candidate !== object).map(candidate => { candidate.updateWorldMatrix(true, true); return { id: candidate.userData.id as string, label: candidate.userData.label as string, bounds: toBounds3(new THREE.Box3().setFromObject(candidate)) }; });
+      const selectedBox = updateBounds(object);
+      const obstacles = [...selectable].filter(candidate => candidate !== object).map(candidate => ({ id: candidate.userData.id as string, label: candidate.userData.label as string, bounds: toBounds3(boundsCache.get(candidate) ?? updateBounds(candidate)) }));
       const spatial = measureSpatialRelationships(toBounds3(selectedBox), obstacles, ROOM_BOUNDS);
       const baseSize = (object.userData.localBounds as { size: [number, number, number] }).size;
       spatial.dimensions = {
@@ -307,14 +315,14 @@ export default function Home() {
 
     const snapshot = (object: THREE.Group) => ({ object, position: object.position.clone(), rotation: object.rotation.clone(), scale: object.scale.clone() });
     const pushUndo = (object: THREE.Group) => { undoStack.push(snapshot(object)); if (undoStack.length > HISTORY_LIMIT) undoStack.shift(); };
-    const restore = (state: ReturnType<typeof snapshot>) => { state.object.position.copy(state.position); state.object.rotation.copy(state.rotation); state.object.scale.copy(state.scale); state.object.updateMatrixWorld(true); select(state.object); scheduleRender(true); setSaved(false); };
-    const mutateCurrent = (mutation: (object: THREE.Group) => void) => { if (!current) return; pushUndo(current); redoStack.length = 0; mutation(current); current.updateMatrixWorld(true); scheduleMeasurementRefresh(true); scheduleRender(true); setSaved(false); };
+    const restore = (state: ReturnType<typeof snapshot>) => { state.object.position.copy(state.position); state.object.rotation.copy(state.rotation); state.object.scale.copy(state.scale); updateBounds(state.object); select(state.object); scheduleRender(true); setSaved(false); };
+    const mutateCurrent = (mutation: (object: THREE.Group) => void) => { if (!current) return; pushUndo(current); redoStack.length = 0; mutation(current); updateBounds(current); scheduleMeasurementRefresh(true); scheduleRender(true); setSaved(false); };
 
     const raycaster = new THREE.Raycaster(); const pointer = new THREE.Vector2();
     const onPointerDown = (event: PointerEvent) => { if (dragging) return; renderer.domElement.focus({ preventScroll: true }); const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, activeCamera); const hit = raycaster.intersectObjects([...pickTargets], false)[0]; select((hit?.object.userData.root as THREE.Group | undefined) || null); };
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
     transform.addEventListener("dragging-changed", event => { dragging = Boolean(event.value); controls.enabled = !dragging; if (dragging && current) pushUndo(current); if (!dragging) { redoStack.length = 0; scheduleMeasurementRefresh(true); } scheduleRender(dragging); });
-    transform.addEventListener("objectChange", () => { setSaved(false); scheduleMeasurementRefresh(false); scheduleRender(true); });
+    transform.addEventListener("objectChange", () => { if (current) updateBounds(current); setSaved(false); scheduleMeasurementRefresh(false); scheduleRender(true); });
     controls.addEventListener("change", () => scheduleRender(false));
 
     const onResize = () => { const width = host.clientWidth; const height = host.clientHeight; if (!width || !height) return; const aspect = width / height; perspectiveCamera.aspect = aspect; perspectiveCamera.updateProjectionMatrix(); const viewHeight = 6.8; orthographicCamera.left = -(viewHeight * aspect) / 2; orthographicCamera.right = (viewHeight * aspect) / 2; orthographicCamera.top = viewHeight / 2; orthographicCamera.bottom = -viewHeight / 2; orthographicCamera.updateProjectionMatrix(); renderer.setSize(width, height, false); scheduleRender(false); };
@@ -323,7 +331,7 @@ export default function Home() {
     const api: SceneController = {
       add: (kind, label) => { const object = makeObject(kind, label, [0.25 + (serial % 3) * 0.35, 0, 0.25]); select(object); setObjectCount(selectable.size); setSaved(false); scheduleRender(true); },
       duplicate: () => { if (!current) return; const source = current; const object = makeObject(source.userData.kind, `${source.userData.label} 副本`, [source.position.x + 0.25, source.position.y, source.position.z + 0.25]); object.rotation.copy(source.rotation); object.scale.copy(source.scale); select(object); setObjectCount(selectable.size); setSaved(false); scheduleRender(true); },
-      remove: () => { if (!current) return; const removed = current; transform.detach(); selectable.delete(removed); pickTargets.delete(removed.userData.pickProxy); layout.remove(removed); for (let i = undoStack.length - 1; i >= 0; i--) if (undoStack[i].object === removed) undoStack.splice(i, 1); for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].object === removed) redoStack.splice(i, 1); current = null; setSelected("未选择对象"); setMetrics(null); clearMeasurementLayer(); setObjectCount(selectable.size); setSaved(false); scheduleRender(true); },
+      remove: () => { if (!current) return; const removed = current; transform.detach(); selectable.delete(removed); pickTargets.delete(removed.userData.pickProxy); boundsCache.delete(removed); layout.remove(removed); for (let i = undoStack.length - 1; i >= 0; i--) if (undoStack[i].object === removed) undoStack.splice(i, 1); for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].object === removed) redoStack.splice(i, 1); current = null; setSelected("未选择对象"); setMetrics(null); clearMeasurementLayer(); setObjectCount(selectable.size); setSaved(false); scheduleRender(true); },
       setTool: mode => { transform.setMode(mode); scheduleRender(false); },
       setView: mode => { activeCamera = mode === "2D" ? orthographicCamera : perspectiveCamera; controls.object = activeCamera; transform.camera = activeCamera; if (mode === "2D") { orthographicCamera.position.set(0, 10, 0); orthographicCamera.zoom = 1; orthographicCamera.updateProjectionMatrix(); controls.target.set(0, 0, 0); controls.enableRotate = false; } else { perspectiveCamera.position.set(6.8, 5.7, 7.6); controls.target.set(0, 1, 0); controls.enableRotate = true; } controls.update(); scheduleRender(false); },
       setMeasurementsVisible: visible => { measurementLayer.visible = visible; scheduleMeasurementRefresh(true); },
