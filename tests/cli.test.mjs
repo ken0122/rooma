@@ -7,7 +7,7 @@ import test from "node:test";
 
 const repoRoot = new URL("../", import.meta.url);
 const cliPath = new URL("../cli/rooma.mjs", import.meta.url);
-const baselinePath = new URL("../rooma.project.json", import.meta.url);
+const baselinePath = new URL("../rooma.default-project.json", import.meta.url);
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "rooma-cli-"));

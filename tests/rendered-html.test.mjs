@@ -72,6 +72,10 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /hashchange/);
   assert.match(page, /className="top-tools"/);
   assert.match(page, /data-tooltip/);
+  assert.match(page, /event\.code === "Space"/);
+  assert.match(page, /空格重置视角/);
+  assert.doesNotMatch(page, /保存方案|已自动保存|className="brand-mark"|className="reset-view"/);
+  assert.match(css, /inspector-collapsed \{ grid-template-columns: 290px minmax\(0, 1fr\) 18px/);
   assert.doesNotMatch(page, /className="toolrail"/);
   assert.ok(page.indexOf("className={`catalogue") < page.indexOf("className=\"workspace\""));
   assert.ok(page.indexOf("className=\"workspace\"") < page.indexOf("className={`inspector"));
