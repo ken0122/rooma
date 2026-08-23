@@ -77,9 +77,11 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /key === "h"/);
   assert.match(page, /ariaShortcut="T"/);
   assert.match(page, /ariaShortcut="H"/);
-  assert.match(page, /className="display-field"/);
-  assert.match(page, /<select aria-label="视图模式"/);
-  assert.match(page, /<select aria-label="模型颜色模式"/);
+  assert.match(page, /className="view-icons"/);
+  assert.match(page, /className="color-swatches"/);
+  assert.match(page, /new THREE\.Box3Helper/);
+  assert.match(page, /new THREE\.AxesHelper/);
+  assert.match(page, /rooma:inspector/);
   assert.match(page, /hasSelection && <section/);
   assert.match(page, /inspector-hidden/);
   assert.doesNotMatch(page, /参数化尺寸请在右侧属性栏编辑|快捷键：G 移动|墙体工具|门窗工具/);
