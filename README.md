@@ -1,8 +1,6 @@
-# vinext-starter
+# ROOMA — 3D 室内布局设计
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+高性能、可参数化、可通过 Web UI、CLI 或 Codex 自然语言操作的 3D 室内布局设计工具。
 
 ## Prerequisites
 
@@ -15,6 +13,29 @@ npm install
 npm run dev
 npm run build
 ```
+
+## ROOMA CLI
+
+CLI 与 Web App 使用同一份工程文档和素材目录：`rooma.project.json`、`rooma.default-project.json`、`rooma.assets.json`。所有长度使用米，Y 轴旋转使用角度。
+
+```bash
+npm run rooma -- status
+npm run rooma -- assets --category bathroom
+npm run rooma -- object list --json
+npm run rooma -- object add sofa --label 会客沙发 --position 0,0,0
+npm run rooma -- object update 会客沙发 --x 0.8 --rotation 90
+npm run rooma -- object clearance 智能马桶 right 0.8
+npm run rooma -- view set ISO
+npm run rooma -- theme set green
+npm run rooma -- measurements off
+npm run rooma -- batch --commands '[["view","set","ISO"],["theme","set","green"]]'
+npm run rooma -- validate
+npm run rooma -- url
+```
+
+写操作使用原子文件替换，并保留最多 100 步 `undo` / `redo` 历史。`batch` 会把一句自然语言中的多项修改合并为一个可整体撤销的事务。`url` 会把完整工程编码为 `#project=...`，线上 Web App 可直接载入，无需为每次布局修改重新部署。
+
+个人 Codex 插件安装在 `/Users/luokun/plugins/rooma-operator`。安装后可以直接说“把智能马桶向左移动 30 厘米并打开结果”或“增加一张双人床，改成绿色等轴测”。
 
 This starter does not use `wrangler.jsonc`.
 
@@ -91,7 +112,9 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 - `npm run dev`: start local development
 - `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
+- `npm test`: build and run Web App, geometry, renderer, and CLI tests
+- `npm run test:cli`: run the deterministic CLI suite
+- `npm run rooma -- <command>`: operate the current ROOMA project
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
 ## Learn More

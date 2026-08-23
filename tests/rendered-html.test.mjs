@@ -67,6 +67,9 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /controls\.touches\.TWO = THREE\.TOUCH\.DOLLY_PAN/);
   assert.match(page, /touchGestureHadMultiple/);
   assert.match(page, /双指平移 · 捏合缩放/);
+  assert.match(page, /loadRoomaProjectFromBrowser/);
+  assert.match(page, /persistRoomaProject/);
+  assert.match(page, /hashchange/);
   assert.match(page, /className="top-tools"/);
   assert.match(page, /data-tooltip/);
   assert.doesNotMatch(page, /className="toolrail"/);

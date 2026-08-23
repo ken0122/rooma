@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "project": {
+    "name": "主卫改造方案",
+    "room": { "name": "主卫", "width": 6, "depth": 5.1, "height": 3.05 },
+    "view": "3D",
+    "colorMode": "blue",
+    "measurementsVisible": true,
+    "selectedObjectId": "toilet-3"
+  },
+  "objects": [
+    { "id": "bathtub-1", "kind": "bathtub", "label": "嵌入式浴缸", "position": { "x": -0.75, "y": 0, "z": -1.55 }, "rotationY": 0, "size": { "x": 1.7, "y": 0.62, "z": 0.78 } },
+    { "id": "vanity-2", "kind": "vanity", "label": "悬浮洗漱台", "position": { "x": 1.9, "y": 0, "z": -1.65 }, "rotationY": 0, "size": { "x": 1.2, "y": 0.9, "z": 0.58 } },
+    { "id": "toilet-3", "kind": "toilet", "label": "智能马桶", "position": { "x": 1.35, "y": 0, "z": 1.35 }, "rotationY": 0, "size": { "x": 0.66, "y": 0.72, "z": 0.72 } },
+    { "id": "wardrobe-4", "kind": "wardrobe", "label": "毛巾柜", "position": { "x": -2.5, "y": 0, "z": 1.5 }, "rotationY": 0, "size": { "x": 0.82, "y": 1.7, "z": 0.48 } },
+    { "id": "stool-5", "kind": "stool", "label": "浴室凳", "position": { "x": -1.35, "y": 0, "z": 1.25 }, "rotationY": 0, "size": { "x": 0.48, "y": 0.5, "z": 0.48 } },
+    { "id": "plant-6", "kind": "plant", "label": "绿植", "position": { "x": 2.35, "y": 0, "z": 0.65 }, "rotationY": 0, "size": { "x": 0.65, "y": 1.05, "z": 0.65 } }
+  ]
+}
