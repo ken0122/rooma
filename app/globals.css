@@ -45,6 +45,7 @@ button { color: inherit; }
 .canvas-host, .scene-canvas { width: 100%; height: 100%; display: block; }
 .scene-canvas { touch-action: none; cursor: grab; outline: none; }
 .scene-canvas:active { cursor: grabbing; }
+.touch-hint { display: none; }
 .display-controls { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .view-switch { display: flex; padding: 4px; border-radius: 12px; background: rgba(255,255,255,.94); border: 1px solid rgba(225,226,235,.95); box-shadow: 0 8px 24px rgba(31,35,70,.08); }
 .view-switch button { height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; cursor: pointer; }
@@ -165,5 +166,6 @@ button { color: inherit; }
   .color-switch button { justify-content: center; padding: 0 7px; }
   .color-switch b { display: inline; font-size: 9px; }
   .inspector.collapsed { left: auto; right: 14px; bottom: 14px; width: 184px; }
+  .touch-hint { position: absolute; left: 14px; bottom: 16px; display: flex; align-items: center; min-height: 30px; padding: 0 9px; border: 1px solid rgba(225,226,235,.92); border-radius: 999px; background: rgba(255,255,255,.88); color: #777b8d; font-size: 9px; font-weight: 700; pointer-events: none; backdrop-filter: blur(8px); }
   .reset-view, .performance-pill { display: none; }
 }

@@ -133,6 +133,10 @@ export default function Home() {
     controls.minDistance = 4;
     controls.maxDistance = 16;
     controls.maxPolarAngle = Math.PI * 0.49;
+    // Reserve one-finger gestures for selecting objects. Camera pan and pinch-zoom
+    // require two fingers so an accidental swipe cannot move the canvas.
+    controls.touches.ONE = -1;
+    controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     const transform = new TransformControls(activeCamera, renderer.domElement);
     transform.setMode("translate");
     transform.setSize(0.72);
@@ -396,8 +400,33 @@ export default function Home() {
     const mutateCurrent = (mutation: (object: THREE.Group) => void) => { if (!current) return; pushUndo(current); redoStack.length = 0; mutation(current); updateBounds(current); scheduleMeasurementRefresh(true); scheduleRender(true); setSaved(false); };
 
     const raycaster = new THREE.Raycaster(); const pointer = new THREE.Vector2();
-    const onPointerDown = (event: PointerEvent) => { if (dragging) return; renderer.domElement.focus({ preventScroll: true }); const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, activeCamera); const hit = raycaster.intersectObjects([...pickTargets], false)[0]; select((hit?.object.userData.root as THREE.Group | undefined) || null); };
+    const touchPointers = new Set<number>();
+    let touchStartPoint: { x: number; y: number } | null = null;
+    let touchMoved = false;
+    let touchGestureHadMultiple = false;
+    const pickAt = (event: PointerEvent) => { const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, activeCamera); const hit = raycaster.intersectObjects([...pickTargets], false)[0]; select((hit?.object.userData.root as THREE.Group | undefined) || null); };
+    const onPointerDown = (event: PointerEvent) => {
+      renderer.domElement.focus({ preventScroll: true });
+      if (event.pointerType === "touch") {
+        if (touchPointers.size === 0) { touchStartPoint = { x: event.clientX, y: event.clientY }; touchMoved = false; touchGestureHadMultiple = false; }
+        touchPointers.add(event.pointerId);
+        if (touchPointers.size > 1) touchGestureHadMultiple = true;
+        return;
+      }
+      if (!dragging) pickAt(event);
+    };
+    const onPointerMove = (event: PointerEvent) => { if (event.pointerType !== "touch" || !touchStartPoint) return; if (Math.hypot(event.clientX - touchStartPoint.x, event.clientY - touchStartPoint.y) > 8) touchMoved = true; };
+    const onPointerEnd = (event: PointerEvent) => {
+      if (event.pointerType !== "touch") return;
+      touchPointers.delete(event.pointerId);
+      if (touchPointers.size > 0) return;
+      if (!dragging && !touchGestureHadMultiple && !touchMoved) pickAt(event);
+      touchStartPoint = null; touchMoved = false; touchGestureHadMultiple = false;
+    };
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointermove", onPointerMove);
+    renderer.domElement.addEventListener("pointerup", onPointerEnd);
+    renderer.domElement.addEventListener("pointercancel", onPointerEnd);
     transform.addEventListener("dragging-changed", event => { dragging = Boolean(event.value); controls.enabled = !dragging; if (dragging && current) pushUndo(current); if (!dragging) { redoStack.length = 0; scheduleMeasurementRefresh(true); } scheduleRender(dragging); });
     transform.addEventListener("objectChange", () => { if (current) updateBounds(current); setSaved(false); scheduleMeasurementRefresh(false); scheduleRender(true); });
     controls.addEventListener("change", () => scheduleRender(false));
@@ -426,7 +455,7 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); resizeObserver.disconnect(); renderScheduler.dispose(); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
+      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); renderer.domElement.removeEventListener("pointermove", onPointerMove); renderer.domElement.removeEventListener("pointerup", onPointerEnd); renderer.domElement.removeEventListener("pointercancel", onPointerEnd); resizeObserver.disconnect(); renderScheduler.dispose(); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
       const disposedGeometries = new Set<THREE.BufferGeometry>(); const disposedMaterials = new Set<THREE.Material>();
       scene.traverse(object => { const renderable = object as THREE.Mesh | THREE.Line | THREE.Sprite; if ("geometry" in renderable && renderable.geometry && !disposedGeometries.has(renderable.geometry)) { disposedGeometries.add(renderable.geometry); renderable.geometry.dispose(); } if ("material" in renderable && renderable.material) { const list = Array.isArray(renderable.material) ? renderable.material : [renderable.material]; list.forEach(material => { if (disposedMaterials.has(material)) return; disposedMaterials.add(material); const map = (material as THREE.MeshStandardMaterial).map; if (map) map.dispose(); material.dispose(); }); } });
       renderer.dispose(); renderer.domElement.remove(); controller.current = null;
@@ -444,7 +473,7 @@ export default function Home() {
     {/* THESIS: A working architectural model, not a dashboard; the room itself leads. OWN-WORLD: White drafting surface, single-color edges, sparse same-hue fills, precise compact controls. STORY: Choose a representation, inspect the room, then directly edit dimensions and clearances. FIRST VIEWPORT: Full-height model canvas framed by a narrow tool rail, material library, and floating inspector; view and color controls sit above the model. FORM: SketchUp-style operating surface, pinned by the user's references; orthographic isometric staging. */}
     <header className="topbar"><div className="brand"><span className="brand-mark">R</span><span>ROOMA</span></div><div className="project-title"><span className="status-dot" />主卫改造方案 <button aria-label="重命名项目">⌄</button></div><div className="top-actions"><span className={`save-state ${saved ? "saved" : ""}`}>{saved ? "已自动保存" : "有未保存更改"}</span><IconButton label="撤销" onClick={() => controller.current?.undo()}>↶</IconButton><IconButton label="重做" onClick={() => controller.current?.redo()}>↷</IconButton><button className="share-button" onClick={() => setSaved(true)}>保存方案</button><button className="avatar" aria-label="账户">LK</button></div></header>
     <aside className="toolrail" aria-label="设计工具"><IconButton label="选择" active>↖</IconButton><span className="rail-divider" /><IconButton label="移动 G" active={tool === "translate"} onClick={() => changeTool("translate")}>✣</IconButton><IconButton label="旋转 R" active={tool === "rotate"} onClick={() => changeTool("rotate")}>⟳</IconButton><IconButton label="参数化尺寸请在属性面板编辑" disabled>↗</IconButton><span className="rail-divider" /><IconButton label="墙体工具开发中" disabled>▰</IconButton><IconButton label="门窗工具开发中" disabled>▯</IconButton><IconButton label="显示或隐藏空间标注" active={measurementsVisible} onClick={toggleMeasurements}>⌁</IconButton><div className="rail-spacer" /><IconButton label="快捷键：G移动、R旋转、Delete删除">?</IconButton></aside>
-    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls"><div className="view-switch" role="group" aria-label="视图模式"><button className={view === "2D" ? "active" : ""} onClick={() => changeView("2D")}>2D 平面</button><button className={view === "ISO" ? "active" : ""} onClick={() => changeView("ISO")}>等轴测</button><button className={view === "3D" ? "active" : ""} onClick={() => changeView("3D")}>3D 空间</button></div><div className="color-switch" role="group" aria-label="模型颜色模式"><span>线稿</span>{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} onClick={() => changeColorMode(mode.id)} aria-label={`${mode.label}模式`} aria-pressed={colorMode === mode.id}><i style={{ background: mode.color }} /><b>{mode.label}</b></button>)}</div></div><button className="reset-view" onClick={() => controller.current?.reset()} aria-label="重置视角">⌂</button><div className="room-meta"><span>主卫</span><b>18.6 m²</b><small>{objectCount} 个对象 · 3.05 m 层高</small></div><div className="performance-pill" title={`最近一帧 CPU 提交 ${renderStats.frameMs.toFixed(1)} ms`}><span /> 按需渲染 · {renderStats.calls} calls · {renderStats.triangles.toLocaleString()} tris</div></section>
+    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls"><div className="view-switch" role="group" aria-label="视图模式"><button className={view === "2D" ? "active" : ""} onClick={() => changeView("2D")}>2D 平面</button><button className={view === "ISO" ? "active" : ""} onClick={() => changeView("ISO")}>等轴测</button><button className={view === "3D" ? "active" : ""} onClick={() => changeView("3D")}>3D 空间</button></div><div className="color-switch" role="group" aria-label="模型颜色模式"><span>线稿</span>{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} onClick={() => changeColorMode(mode.id)} aria-label={`${mode.label}模式`} aria-pressed={colorMode === mode.id}><i style={{ background: mode.color }} /><b>{mode.label}</b></button>)}</div></div><button className="reset-view" onClick={() => controller.current?.reset()} aria-label="重置视角">⌂</button><div className="room-meta"><span>主卫</span><b>18.6 m²</b><small>{objectCount} 个对象 · 3.05 m 层高</small></div><div className="touch-hint" aria-label="触控提示">双指平移 · 捏合缩放</div><div className="performance-pill" title={`最近一帧 CPU 提交 ${renderStats.frameMs.toFixed(1)} ms`}><span /> 按需渲染 · {renderStats.calls} calls · {renderStats.triangles.toLocaleString()} tris</div></section>
     <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`}><button className="catalogue-toggle" onClick={() => setCatalogueOpen(value => !value)} aria-label="展开或收起标模库">{catalogueOpen ? "›" : "‹"}</button><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></aside>
     <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="对象尺寸与空间关系"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selected}</b><small>输入数值后按 Enter 或点击外部应用</small><button className="inspector-toggle" onClick={() => setInspectorOpen(value => !value)} aria-expanded={inspectorOpen}>{inspectorOpen ? "收起" : "属性"}</button></div>{metrics ? <>
       <div className="inspector-section"><h3>位置与旋转</h3><div className="metric-grid position-grid">{AXES.map(axis => <div className="metric-cell" key={axis}><span>{axis.toUpperCase()}</span><MetricInput ariaLabel={`${axis.toUpperCase()} 位置`} value={metrics.position[axis]} onCommit={value => controller.current?.setPosition(axis, value)} /></div>)}<div className="metric-cell"><span>旋转 Y</span><MetricInput ariaLabel="Y 轴旋转" unit="°" step={1} value={metrics.rotationY} onCommit={value => controller.current?.setRotation(value)} /></div></div></div>
