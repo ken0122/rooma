@@ -35,7 +35,7 @@ test("status、assets、validate 和 url 提供稳定机器输出", async t => {
   assert.equal(status.status, 0);
   assert.equal(status.payload.ok, true);
   assert.equal(status.payload.result.objectCount, 6);
-  assert.equal(status.payload.result.selectedObject.id, "toilet-3");
+  assert.equal(status.payload.result.selectedObject, null);
   assert.ok(Math.abs(status.payload.result.room.area - 30.6) < 1e-9);
 
   const assets = run(file, "assets");
@@ -163,7 +163,7 @@ test("batch 将一句自然语言中的多项修改作为单个原子事务", as
   assert.equal(restored.objects.find(object => object.id === "toilet-3").position.x, 1.35);
   assert.equal(restored.project.view, "3D");
   assert.equal(restored.project.colorMode, "blue");
-  assert.equal(restored.project.measurementsVisible, true);
+  assert.equal(restored.project.measurementsVisible, false);
 });
 
 test("非法命令明确非零退出且不会损坏项目文件", async t => {

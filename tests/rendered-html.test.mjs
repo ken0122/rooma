@@ -30,7 +30,7 @@ test("server-renders the ROOMA editor shell and social metadata", async () => {
   assert.match(html, /主卫改造方案/);
   assert.match(html, /参数化标模/);
   assert.match(html, /选择置入 · 尺寸可编辑/);
-  assert.match(html, /选中对象属性/);
+  assert.doesNotMatch(html, /选中对象属性/);
   assert.match(html, /常用设计工具/);
   assert.match(html, /property="og:image"/);
   assert.match(html, /og\.png/);
@@ -73,7 +73,16 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /className="top-tools"/);
   assert.match(page, /data-tooltip/);
   assert.match(page, /event\.code === "Space"/);
-  assert.match(page, /空格重置视角/);
+  assert.match(page, /key === "t"/);
+  assert.match(page, /key === "h"/);
+  assert.match(page, /ariaShortcut="T"/);
+  assert.match(page, /ariaShortcut="H"/);
+  assert.match(page, /className="display-field"/);
+  assert.match(page, /<select aria-label="视图模式"/);
+  assert.match(page, /<select aria-label="模型颜色模式"/);
+  assert.match(page, /hasSelection && <section/);
+  assert.match(page, /inspector-hidden/);
+  assert.doesNotMatch(page, /参数化尺寸请在右侧属性栏编辑|快捷键：G 移动|墙体工具|门窗工具/);
   assert.doesNotMatch(page, /保存方案|已自动保存|className="brand-mark"|className="reset-view"/);
   assert.match(css, /inspector-collapsed \{ grid-template-columns: 290px minmax\(0, 1fr\) 18px/);
   assert.doesNotMatch(page, /className="toolrail"/);

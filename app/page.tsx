@@ -9,7 +9,7 @@ import { RenderScheduler } from "@/lib/engine/render-scheduler";
 import { ASSET_CATEGORIES, PARAMETRIC_ASSETS, clampParametricSize, formatAssetSize, getParametricAsset, type AssetCategory } from "@/lib/engine/parametric";
 import { DEFAULT_PROJECT, loadRoomaProjectFromBrowser, persistRoomaProject, type RoomaColorMode, type RoomaProject, type RoomaView } from "@/lib/project";
 
-type ToolMode = "translate" | "rotate" | "scale";
+type ToolMode = "select" | "translate" | "rotate";
 type ViewMode = RoomaView;
 type ColorMode = RoomaColorMode;
 type EditorMetrics = SpatialMetrics & { position: Point3; rotationY: number; limits?: { min: Point3; max: Point3 } };
@@ -51,9 +51,9 @@ const directionLabels: Record<Clearance["key"], string> = {
   "y-positive": "上 ↑", "z-negative": "↙ 后", "z-positive": "前 ↗",
 };
 
-function IconButton({ label, active, disabled, unavailable, tooltip, children, onClick }: { label: string; active?: boolean; disabled?: boolean; unavailable?: boolean; tooltip?: boolean; children: React.ReactNode; onClick?: () => void }) {
-  const button = <button className={`icon-button ${active ? "active" : ""} ${unavailable ? "unavailable" : ""}`} aria-label={label} aria-disabled={unavailable || undefined} title={tooltip ? undefined : label} disabled={disabled} onClick={unavailable ? undefined : onClick}>{children}</button>;
-  return tooltip ? <span className="tool-tip" data-tooltip={label}>{button}</span> : button;
+function IconButton({ label, shortcut, ariaShortcut, active, children, onClick }: { label: string; shortcut: string; ariaShortcut?: string; active?: boolean; children: React.ReactNode; onClick: () => void }) {
+  const tooltip = `${label} · ${shortcut}`;
+  return <span className="tool-tip" data-tooltip={tooltip}><button className={`icon-button ${active ? "active" : ""}`} aria-label={tooltip} aria-keyshortcuts={ariaShortcut} title={tooltip} onClick={onClick}>{children}</button></span>;
 }
 
 function MetricInput({ value, unit = "m", min, max, step = 0.05, ariaLabel, onCommit }: { value: number; unit?: string; min?: number; max?: number; step?: number; ariaLabel: string; onCommit: (value: number) => void }) {
@@ -78,7 +78,7 @@ const toBounds3 = (box: THREE.Box3): Bounds3 => ({ min: { x: box.min.x, y: box.m
 export default function Home() {
   const canvasHost = useRef<HTMLDivElement>(null);
   const controller = useRef<SceneController | null>(null);
-  const [tool, setTool] = useState<ToolMode>("translate");
+  const [tool, setTool] = useState<ToolMode>("select");
   const [view, setView] = useState<ViewMode>(DEFAULT_PROJECT.project.view);
   const [colorMode, setColorMode] = useState<ColorMode>(DEFAULT_PROJECT.project.colorMode);
   const [selected, setSelected] = useState(DEFAULT_PROJECT.objects.find(object => object.id === DEFAULT_PROJECT.project.selectedObjectId)?.label ?? "未选择对象");
@@ -89,13 +89,13 @@ export default function Home() {
   const [measurementsVisible, setMeasurementsVisible] = useState(DEFAULT_PROJECT.project.measurementsVisible);
   const [objectCount, setObjectCount] = useState(DEFAULT_PROJECT.objects.length);
   const [catalogueOpen, setCatalogueOpen] = useState(true);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState<AssetCategory>("furniture");
   const [catalogueQuery, setCatalogueQuery] = useState("");
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      if (window.innerWidth <= 760) { setCatalogueOpen(false); setInspectorOpen(false); }
+      if (window.innerWidth <= 760) setCatalogueOpen(false);
     });
     return () => cancelAnimationFrame(frame);
   }, []);
@@ -179,6 +179,7 @@ export default function Home() {
     let current: THREE.Group | null = null;
     let serial = 10;
     let dragging = false;
+    let currentToolMode: ToolMode = "select";
     let currentColorMode: ColorMode = initialProject.project.colorMode;
     let currentViewMode: ViewMode = initialProject.project.view;
     let measurementTimer: ReturnType<typeof setTimeout> | null = null;
@@ -417,7 +418,22 @@ export default function Home() {
     };
     const scheduleMeasurementRefresh = (immediate = false) => { if (measurementTimer) clearTimeout(measurementTimer); if (immediate) refreshMeasurements(); else measurementTimer = setTimeout(refreshMeasurements, 70); };
     let persistScene = () => {};
-    const select = (object: THREE.Group | null) => { current = object; if (object) { transform.attach(object); setSelected(object.userData.label || "未命名对象"); } else { transform.detach(); setSelected("未选择对象"); } scheduleMeasurementRefresh(true); scheduleRender(false); persistScene(); };
+    const select = (object: THREE.Group | null) => {
+      current = object;
+      if (object) {
+        if (currentToolMode === "select") transform.detach(); else transform.attach(object);
+        setSelected(object.userData.label || "未命名对象");
+        setInspectorOpen(true);
+        if (window.innerWidth <= 760) setCatalogueOpen(false);
+      } else {
+        transform.detach();
+        setSelected("未选择对象");
+        setInspectorOpen(false);
+      }
+      scheduleMeasurementRefresh(true);
+      scheduleRender(false);
+      persistScene();
+    };
     persistScene = () => {
       const project: RoomaProject = {
         schemaVersion: 1,
@@ -484,7 +500,15 @@ export default function Home() {
       add: (kind, label) => { const object = makeObject(kind, label, [0.25 + (serial % 3) * 0.35, 0, 0.25]); select(object); setObjectCount(selectable.size); scheduleRender(true); persistScene(); },
       duplicate: () => { if (!current) return; const source = current; const object = makeObject(source.userData.kind, `${source.userData.label} 副本`, [source.position.x + 0.25, source.position.y, source.position.z + 0.25], { ...(source.userData.parametricSize as Point3) }); object.rotation.copy(source.rotation); select(object); setObjectCount(selectable.size); scheduleRender(true); persistScene(); },
       remove: () => { if (!current) return; const removed = current; transform.detach(); selectable.delete(removed); pickTargets.delete(removed.userData.pickProxy); boundsCache.delete(removed); layout.remove(removed); for (let i = undoStack.length - 1; i >= 0; i--) if (undoStack[i].object === removed) undoStack.splice(i, 1); for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].object === removed) redoStack.splice(i, 1); current = null; setSelected("未选择对象"); setMetrics(null); clearMeasurementLayer(); setObjectCount(selectable.size); scheduleRender(true); persistScene(); },
-      setTool: mode => { transform.setMode(mode); scheduleRender(false); },
+      setTool: mode => {
+        currentToolMode = mode;
+        if (mode === "select") transform.detach();
+        else {
+          transform.setMode(mode);
+          if (current) transform.attach(current);
+        }
+        scheduleRender(false);
+      },
       setView: mode => { currentViewMode = mode; activeCamera = mode === "2D" ? orthographicCamera : mode === "ISO" ? isometricCamera : perspectiveCamera; controls.object = activeCamera; transform.camera = activeCamera; if (mode === "2D") { orthographicCamera.position.set(0, 10, 0); orthographicCamera.zoom = 1; orthographicCamera.updateProjectionMatrix(); controls.target.set(0, 0, 0); controls.enableRotate = false; } else if (mode === "ISO") { isometricCamera.position.set(6.4, 6.4, 6.4); isometricCamera.zoom = 1; isometricCamera.updateProjectionMatrix(); controls.target.set(0, 1, 0); controls.enableRotate = false; } else { perspectiveCamera.position.set(6.8, 5.7, 7.6); controls.target.set(0, 1, 0); controls.enableRotate = true; } controls.update(); scheduleRender(false); persistScene(); },
       setColorMode: mode => { currentColorMode = mode; const theme = sceneThemes[mode]; scene.background = new THREE.Color(theme.background); if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(theme.background); materials.furniture.color.setHex(theme.surface); materials.floor.color.setHex(theme.surface); materials.accent.color.setHex(theme.ink); materials.wall.color.setHex(theme.surface); materials.plant.color.setHex(theme.tint); sketchLineMaterial.color.setHex(theme.ink); const gridMaterial = grid.material as THREE.LineBasicMaterial | THREE.LineBasicMaterial[]; const gridList = Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial]; gridList.forEach((material, index) => { material.color.setHex(index === 0 ? theme.ink : theme.grid); material.opacity = index === 0 ? 0.34 : 0.16; }); scheduleMeasurementRefresh(true); scheduleRender(true); persistScene(); },
       setMeasurementsVisible: visible => { measurementLayer.visible = visible; scheduleMeasurementRefresh(true); persistScene(); },
@@ -500,7 +524,7 @@ export default function Home() {
     api.setView(initialProject.project.view);
     api.setColorMode(initialProject.project.colorMode);
     api.setMeasurementsVisible(initialProject.project.measurementsVisible);
-    select(projectObjects.get(initialProject.project.selectedObjectId ?? "") ?? projectObjects.values().next().value ?? null);
+    select(projectObjects.get(initialProject.project.selectedObjectId ?? "") ?? null);
     onResize();
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target instanceof HTMLElement ? event.target : null;
@@ -508,8 +532,10 @@ export default function Home() {
       const key = event.key.toLowerCase();
       if (event.code === "Space") { event.preventDefault(); api.reset(); }
       if (key === "delete" || key === "backspace") api.remove();
+      if (key === "t") { setTool("select"); api.setTool("select"); }
       if (key === "g") { setTool("translate"); api.setTool("translate"); }
       if (key === "r") { setTool("rotate"); api.setTool("rotate"); }
+      if (key === "h" && !event.repeat) { const next = !measurementLayer.visible; setMeasurementsVisible(next); api.setMeasurementsVisible(next); }
       if (key === "z" && (event.metaKey || event.ctrlKey)) { if (event.shiftKey) api.redo(); else api.undo(); }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -530,16 +556,18 @@ export default function Home() {
   const toggleInspector = () => setInspectorOpen(value => { const next = !value; if (next && window.innerWidth <= 760) setCatalogueOpen(false); return next; });
   const normalizedQuery = catalogueQuery.trim().toLowerCase();
   const visibleAssets = PARAMETRIC_ASSETS.filter(asset => asset.category === activeCategory && (!normalizedQuery || `${asset.label} ${asset.kind}`.toLowerCase().includes(normalizedQuery)));
+  const hasSelection = selected !== "未选择对象";
 
-  return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${inspectorOpen ? "" : "inspector-collapsed"}`} data-color-mode={colorMode}>
+  return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${hasSelection ? inspectorOpen ? "" : "inspector-collapsed" : "inspector-hidden"}`} data-color-mode={colorMode}>
     {/* THESIS: A working architectural model, not a dashboard; the room itself leads. OWN-WORLD: White drafting surface, single-color edges, sparse same-hue fills, precise compact controls. STORY: Choose an asset on the left, compose it on the canvas, then edit its properties on the right. FIRST VIEWPORT: A three-pane workbench with a left asset catalogue, central room canvas, right object inspector, and common tools in the topbar. FORM: SketchUp-style operating surface, pinned by the user's references; orthographic isometric staging. */}
-    <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className="status-dot" />{projectName} <button aria-label="重命名项目">⌄</button></div><nav className="top-tools" aria-label="常用设计工具"><IconButton tooltip label="选择对象" active>↖</IconButton><span className="tool-divider" /><IconButton tooltip label="移动对象 · G" active={tool === "translate"} onClick={() => changeTool("translate")}>✣</IconButton><IconButton tooltip label="旋转对象 · R" active={tool === "rotate"} onClick={() => changeTool("rotate")}>⟳</IconButton><IconButton tooltip label="参数化尺寸请在右侧属性栏编辑" unavailable>↗</IconButton><span className="tool-divider" /><IconButton tooltip label="墙体工具 · 开发中" unavailable>▰</IconButton><IconButton tooltip label="门窗工具 · 开发中" unavailable>▯</IconButton><IconButton tooltip label="显示或隐藏空间标注" active={measurementsVisible} onClick={toggleMeasurements}>⌁</IconButton><IconButton tooltip label="快捷键：G 移动、R 旋转、空格重置视角、Delete 删除">?</IconButton></nav><div className="top-actions"><IconButton label="撤销" onClick={() => controller.current?.undo()}>↶</IconButton><IconButton label="重做" onClick={() => controller.current?.redo()}>↷</IconButton><button className="avatar" aria-label="账户">LK</button></div></header>
+    <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className="status-dot" />{projectName} <button aria-label="重命名项目">⌄</button></div><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}>↖</IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}>✣</IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}>⟳</IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}>⌁</IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" onClick={() => controller.current?.undo()}>↶</IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" onClick={() => controller.current?.redo()}>↷</IconButton><button className="avatar" aria-label="账户">LK</button></div></header>
     <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`} aria-label="参数化素材"><button className="catalogue-toggle" onClick={toggleCatalogue} aria-expanded={catalogueOpen} aria-label="展开或收起标模库">{catalogueOpen ? "‹" : "›"}</button>{catalogueOpen && <div className="catalogue-content"><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></div>}</aside>
-    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls"><div className="view-switch" role="group" aria-label="视图模式"><button className={view === "2D" ? "active" : ""} onClick={() => changeView("2D")}>2D 平面</button><button className={view === "ISO" ? "active" : ""} onClick={() => changeView("ISO")}>等轴测</button><button className={view === "3D" ? "active" : ""} onClick={() => changeView("3D")}>3D 空间</button></div><div className="color-switch" role="group" aria-label="模型颜色模式"><span>线稿</span>{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} onClick={() => changeColorMode(mode.id)} aria-label={`${mode.label}模式`} aria-pressed={colorMode === mode.id}><i style={{ background: mode.color }} /><b>{mode.label}</b></button>)}</div></div><div className="room-meta"><span>{roomInfo.name}</span><b>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</b><small>{objectCount} 个对象 · {roomInfo.height.toFixed(2)} m 层高</small></div><div className="touch-hint" aria-label="触控提示">双指平移 · 捏合缩放</div><div className="performance-pill" title={`最近一帧 CPU 提交 ${renderStats.frameMs.toFixed(1)} ms`}><span /> 按需渲染 · {renderStats.calls} calls · {renderStats.triangles.toLocaleString()} tris</div></section>
-    <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selected}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
+    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls" role="group" aria-label="场景显示设置"><label className="display-field"><span>视图</span><select aria-label="视图模式" value={view} onChange={event => changeView(event.target.value as ViewMode)}><option value="2D">2D 平面</option><option value="ISO">等轴测</option><option value="3D">3D 空间</option></select></label><label className="display-field"><span>线稿颜色</span><select aria-label="模型颜色模式" value={colorMode} onChange={event => changeColorMode(event.target.value as ColorMode)}>{COLOR_MODES.map(mode => <option key={mode.id} value={mode.id}>{mode.label}</option>)}</select></label></div><div className="room-meta"><span>{roomInfo.name}</span><b>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</b><small>{objectCount} 个对象 · {roomInfo.height.toFixed(2)} m 层高</small></div><div className="touch-hint" aria-label="触控提示">双指平移 · 捏合缩放</div><div className="performance-pill" title={`最近一帧 CPU 提交 ${renderStats.frameMs.toFixed(1)} ms`}><span /> 按需渲染 · {renderStats.calls} calls · {renderStats.triangles.toLocaleString()} tris</div></section>
+    {hasSelection && <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selected}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
       <div className="inspector-section"><h3>位置与旋转</h3><div className="metric-grid position-grid">{AXES.map(axis => <div className="metric-cell" key={axis}><span>{axis.toUpperCase()}</span><MetricInput ariaLabel={`${axis.toUpperCase()} 位置`} value={metrics.position[axis]} onCommit={value => controller.current?.setPosition(axis, value)} /></div>)}<div className="metric-cell"><span>旋转 Y</span><MetricInput ariaLabel="Y 轴旋转" unit="°" step={1} value={metrics.rotationY} onCommit={value => controller.current?.setRotation(value)} /></div></div></div>
       <div className="inspector-section"><div className="section-heading"><h3>三维尺寸</h3><span>结构随尺寸自动重建</span></div><div className="metric-grid dimension-grid">{AXES.map(axis => <div className={`metric-cell axis-${axis}`} key={axis}><span>{axisLabels[axis]}</span><MetricInput ariaLabel={`${axisLabels[axis]}尺寸`} min={metrics.limits?.min[axis] ?? .01} max={metrics.limits?.max[axis]} value={metrics.dimensions[axis]} onCommit={value => controller.current?.setDimension(axis, value)} /></div>)}</div><p className="parametric-note">构件细节与常用比例保持不变，不会被拉伸变形。</p></div>
       <div className="inspector-section clearance-section"><div className="section-heading"><h3>最近空间距离</h3><span>参照墙体或物体</span></div><div className="clearance-grid">{metrics.clearances.map(clearance => <div className={`clearance-cell axis-${clearance.axis}`} key={clearance.key}><div><b>{directionLabels[clearance.key]}</b><small>{clearance.referenceLabel}</small></div><MetricInput ariaLabel={`${directionLabels[clearance.key]}到${clearance.referenceLabel}的距离`} min={0} value={clearance.distance} onCommit={value => controller.current?.setClearance(clearance, value)} /></div>)}</div></div>
-    </> : <div className="inspector-empty">选择一个物体以查看尺寸和空间距离</div>}<div className="property-actions"><button onClick={() => controller.current?.remove()}>删除对象</button><button onClick={() => controller.current?.duplicate()}>复制对象</button></div></div>}</section>
+      <div className="property-actions"><button onClick={() => controller.current?.remove()}>删除对象</button><button onClick={() => controller.current?.duplicate()}>复制对象</button></div>
+    </> : <div className="inspector-empty">正在读取对象属性…</div>}</div>}</section>}
   </main>;
 }

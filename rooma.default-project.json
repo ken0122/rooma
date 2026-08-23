@@ -5,8 +5,8 @@
     "room": { "name": "主卫", "width": 6, "depth": 5.1, "height": 3.05 },
     "view": "3D",
     "colorMode": "blue",
-    "measurementsVisible": true,
-    "selectedObjectId": "toilet-3"
+    "measurementsVisible": false,
+    "selectedObjectId": null
   },
   "objects": [
     { "id": "bathtub-1", "kind": "bathtub", "label": "嵌入式浴缸", "position": { "x": -0.75, "y": 0, "z": -1.55 }, "rotationY": 0, "size": { "x": 1.7, "y": 0.62, "z": 0.78 } },

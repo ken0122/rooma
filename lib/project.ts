@@ -62,7 +62,7 @@ export function normalizeRoomaProject(value: unknown): RoomaProject {
   }) : structuredClone(DEFAULT_PROJECT.objects);
   const view = ["3D", "ISO", "2D"].includes(metadata.view) ? metadata.view : "3D";
   const colorMode = ["blue", "red", "green", "mono"].includes(metadata.colorMode) ? metadata.colorMode : "blue";
-  const selectedObjectId = typeof metadata.selectedObjectId === "string" && ids.has(metadata.selectedObjectId) ? metadata.selectedObjectId : objects[0]?.id ?? null;
+  const selectedObjectId = typeof metadata.selectedObjectId === "string" && ids.has(metadata.selectedObjectId) ? metadata.selectedObjectId : null;
   return {
     schemaVersion: 1,
     project: {
@@ -75,7 +75,7 @@ export function normalizeRoomaProject(value: unknown): RoomaProject {
       },
       view: view as RoomaView,
       colorMode: colorMode as RoomaColorMode,
-      measurementsVisible: metadata.measurementsVisible !== false,
+      measurementsVisible: metadata.measurementsVisible === true,
       selectedObjectId,
     },
     objects,
