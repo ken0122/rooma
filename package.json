@@ -15,7 +15,7 @@
     "rooma": "node cli/rooma.mjs",
     "typecheck": "tsc --noEmit",
     "test:cli": "node --test tests/cli.test.mjs",
-    "test": "npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs tests/project.test.ts tests/project-history.test.ts tests/spatial.test.ts tests/render-scheduler.test.ts tests/parametric.test.ts tests/cli.test.mjs",
+    "test": "npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs tests/project.test.ts tests/project-history.test.ts tests/spatial.test.ts tests/render-scheduler.test.ts tests/parametric.test.ts tests/cli.test.mjs tests/cicd.test.mjs",
     "bench:spatial": "node benchmarks/spatial.bench.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"

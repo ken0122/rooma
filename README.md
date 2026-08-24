@@ -37,6 +37,12 @@ npm run rooma -- url
 
 `url` 会把完整工程编码为 `#project=...`。Web App 将它作为一次性快照导入本地工作副本，备份已有本地草稿并从地址栏移除快照 hash；导入后的 Web 编辑刷新不会回退到旧快照。CLI 文件与已打开的浏览器标签不会自动双向同步。
 
+## Production CI/CD
+
+推送到 GitHub `main` 后，`.github/workflows/deploy-production.yml` 会依次执行依赖安装、lint、完整测试与构建，通过后部署到 `rooma-3d-editor` Worker，并访问 `https://rooma-3d-editor.ron-nextop.workers.dev/` 验证生产页面。
+
+GitHub 仓库必须配置 `CLOUDFLARE_ACCOUNT_ID` 和 `CLOUDFLARE_API_TOKEN` 两个 Actions Secrets。API Token 只授予目标 Cloudflare 账户的 Workers Scripts Edit 权限，不要写入仓库、日志或普通环境变量。
+
 个人 Codex 插件安装在 `/Users/luokun/plugins/rooma-operator`。安装后可以直接说“把智能马桶向左移动 30 厘米并打开结果”或“增加一张双人床，改成绿色等轴测”。
 
 This starter does not use `wrangler.jsonc`.
