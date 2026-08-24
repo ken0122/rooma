@@ -6,13 +6,15 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { AXES, measureSpatialRelationships, movementForClearance, type Axis3, type Bounds3, type Clearance, type Point3, type SpatialMetrics } from "@/lib/engine/spatial";
 import { RenderScheduler } from "@/lib/engine/render-scheduler";
+import { ProjectHistory } from "@/lib/engine/project-history";
 import { ASSET_CATEGORIES, PARAMETRIC_ASSETS, clampParametricSize, formatAssetSize, getParametricAsset, type AssetCategory } from "@/lib/engine/parametric";
-import { DEFAULT_PROJECT, loadRoomaProjectFromBrowser, persistRoomaProject, type RoomaColorMode, type RoomaProject, type RoomaView } from "@/lib/project";
+import { DEFAULT_PROJECT, loadRoomaProjectFromBrowser, persistRoomaProject, restoreRoomaProjectBackupFromBrowser, type RoomaColorMode, type RoomaObject, type RoomaProject, type RoomaView } from "@/lib/project";
+import { boundsForSizedObject, spatialIssuesForObject } from "@/lib/project-domain.js";
 
 type ToolMode = "select" | "translate" | "rotate";
 type ViewMode = RoomaView;
 type ColorMode = RoomaColorMode;
-type EditorMetrics = SpatialMetrics & { position: Point3; rotationY: number; limits?: { min: Point3; max: Point3 } };
+type EditorMetrics = SpatialMetrics & { position: Point3; rotationY: number; limits?: { min: Point3; max: Point3 }; issues: string[] };
 type SceneController = {
   add: (kind: string, label: string) => void;
   duplicate: () => void;
@@ -28,6 +30,7 @@ type SceneController = {
   undo: () => void;
   redo: () => void;
   reset: () => void;
+  selectById: (id: string) => void;
 };
 
 const BLUE = 0x2436d8;
@@ -50,9 +53,9 @@ const directionLabels: Record<Clearance["key"], string> = {
   "y-positive": "上 ↑", "z-negative": "↙ 后", "z-positive": "前 ↗",
 };
 
-function IconButton({ label, shortcut, ariaShortcut, active, children, onClick }: { label: string; shortcut: string; ariaShortcut?: string; active?: boolean; children: React.ReactNode; onClick: () => void }) {
+function IconButton({ label, shortcut, ariaShortcut, active, disabled = false, children, onClick }: { label: string; shortcut: string; ariaShortcut?: string; active?: boolean; disabled?: boolean; children: React.ReactNode; onClick: () => void }) {
   const tooltip = `${label} · ${shortcut}`;
-  return <span className="tool-tip" data-tooltip={tooltip}><button className={`icon-button ${active ? "active" : ""}`} aria-label={tooltip} aria-keyshortcuts={ariaShortcut} title={tooltip} onClick={onClick}>{children}</button></span>;
+  return <span className="tool-tip" data-tooltip={tooltip}><button className={`icon-button ${active ? "active" : ""}`} aria-label={tooltip} aria-keyshortcuts={ariaShortcut} aria-pressed={active} title={tooltip} disabled={disabled} onClick={onClick}>{children}</button></span>;
 }
 
 function ViewButton({ label, active, children, onClick }: { label: string; active: boolean; children: React.ReactNode; onClick: () => void }) {
@@ -84,7 +87,8 @@ export default function Home() {
   const [tool, setTool] = useState<ToolMode>("select");
   const [view, setView] = useState<ViewMode>(DEFAULT_PROJECT.project.view);
   const [colorMode, setColorMode] = useState<ColorMode>(DEFAULT_PROJECT.project.colorMode);
-  const [selected, setSelected] = useState(DEFAULT_PROJECT.objects.find(object => object.id === DEFAULT_PROJECT.project.selectedObjectId)?.label ?? "未选择对象");
+  const initialSelected = DEFAULT_PROJECT.objects.find(object => object.id === DEFAULT_PROJECT.project.selectedObjectId) ?? null;
+  const [selectedObject, setSelectedObject] = useState<{ id: string; label: string } | null>(initialSelected ? { id: initialSelected.id, label: initialSelected.label } : null);
   const [projectName, setProjectName] = useState(DEFAULT_PROJECT.project.name);
   const [roomInfo, setRoomInfo] = useState(DEFAULT_PROJECT.project.room);
   const [metrics, setMetrics] = useState<EditorMetrics | null>(null);
@@ -95,12 +99,25 @@ export default function Home() {
   const inspectorOpenPreference = useRef(inspectorOpen);
   const [activeCategory, setActiveCategory] = useState<AssetCategory>("furniture");
   const [catalogueQuery, setCatalogueQuery] = useState("");
+  const [sceneObjects, setSceneObjects] = useState(DEFAULT_PROJECT.objects.map(({ id, label }) => ({ id, label })));
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [saveState, setSaveState] = useState<"saved" | "error">("saved");
+  const [saveMessage, setSaveMessage] = useState("本地已保存");
+  const [projectNotice, setProjectNotice] = useState<string | null>(null);
+  const [backupAvailable, setBackupAvailable] = useState(false);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
-      const savedInspectorOpen = window.localStorage.getItem("rooma:inspector") !== "collapsed";
-      inspectorOpenPreference.current = savedInspectorOpen;
-      setInspectorOpen(savedInspectorOpen);
+      try {
+        const savedInspectorOpen = window.localStorage.getItem("rooma:inspector") !== "collapsed";
+        inspectorOpenPreference.current = savedInspectorOpen;
+        setInspectorOpen(savedInspectorOpen);
+      } catch {
+        setSaveState("error");
+        setSaveMessage("本地保存不可用");
+        setProjectNotice("浏览器存储不可用，本次编辑可能无法在刷新后恢复。");
+      }
       if (window.innerWidth <= 760) setCatalogueOpen(false);
     });
     return () => cancelAnimationFrame(frame);
@@ -116,7 +133,8 @@ export default function Home() {
     const host = canvasHost.current;
     if (!host) return;
 
-    const initialProject = loadRoomaProjectFromBrowser();
+    const loadedProject = loadRoomaProjectFromBrowser();
+    const initialProject = loadedProject.project;
     const room = initialProject.project.room;
     const roomBounds: Bounds3 = { min: { x: -room.width / 2, y: 0, z: -room.depth / 2 }, max: { x: room.width / 2, y: room.height, z: room.depth / 2 } };
     setProjectName(initialProject.project.name);
@@ -125,6 +143,10 @@ export default function Home() {
     setColorMode(initialProject.project.colorMode);
     setMeasurementsVisible(initialProject.project.measurementsVisible);
     setObjectCount(initialProject.objects.length);
+    setSceneObjects(initialProject.objects.map(({ id, label }) => ({ id, label })));
+    setProjectNotice(loadedProject.notice ?? (loadedProject.repairs.length ? `工程载入时修复了 ${loadedProject.repairs.length} 项数据。` : null));
+    setBackupAvailable(loadedProject.backupAvailable);
+    const storageStatusFrame = loadedProject.storageError ? requestAnimationFrame(() => { setSaveState("error"); setSaveMessage("本地保存不可用"); }) : 0;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(sceneThemes[initialProject.project.colorMode].background);
@@ -159,7 +181,7 @@ export default function Home() {
     controls.maxPolarAngle = Math.PI * 0.49;
     // Reserve one-finger gestures for selecting objects. Camera pan and pinch-zoom
     // require two fingers so an accidental swipe cannot move the canvas.
-    controls.touches.ONE = -1;
+    controls.touches.ONE = null;
     controls.touches.TWO = THREE.TOUCH.DOLLY_PAN;
     const transform = new TransformControls(activeCamera, renderer.domElement);
     transform.setMode("translate");
@@ -167,16 +189,18 @@ export default function Home() {
     scene.add(transform.getHelper());
 
     const selectedBounds = new THREE.Box3Helper(new THREE.Box3(), sceneThemes[initialProject.project.colorMode].ink);
-    selectedBounds.material.transparent = true;
-    selectedBounds.material.opacity = 0.95;
-    selectedBounds.material.depthTest = false;
+    const selectedBoundsMaterial = selectedBounds.material as THREE.LineBasicMaterial;
+    selectedBoundsMaterial.transparent = true;
+    selectedBoundsMaterial.opacity = 0.95;
+    selectedBoundsMaterial.depthTest = false;
     selectedBounds.renderOrder = 900;
     selectedBounds.visible = false;
     scene.add(selectedBounds);
     const hoverBounds = new THREE.Box3Helper(new THREE.Box3(), sceneThemes[initialProject.project.colorMode].ink);
-    hoverBounds.material.transparent = true;
-    hoverBounds.material.opacity = 0.42;
-    hoverBounds.material.depthTest = false;
+    const hoverBoundsMaterial = hoverBounds.material as THREE.LineBasicMaterial;
+    hoverBoundsMaterial.transparent = true;
+    hoverBoundsMaterial.opacity = 0.42;
+    hoverBoundsMaterial.depthTest = false;
     hoverBounds.renderOrder = 899;
     hoverBounds.visible = false;
     scene.add(hoverBounds);
@@ -218,15 +242,22 @@ export default function Home() {
     const boundsCache = new Map<THREE.Group, THREE.Box3>();
     let current: THREE.Group | null = null;
     let hovered: THREE.Group | null = null;
-    let serial = 10;
+    let serial = 1;
     let dragging = false;
     let currentToolMode: ToolMode = "select";
     let currentColorMode: ColorMode = initialProject.project.colorMode;
     let currentViewMode: ViewMode = initialProject.project.view;
     let measurementTimer: ReturnType<typeof setTimeout> | null = null;
-    const undoStack: Array<{ object: THREE.Group; position: THREE.Vector3; rotation: THREE.Euler; scale: THREE.Vector3 }> = [];
-    const redoStack: typeof undoStack = [];
     const HISTORY_LIMIT = 100;
+    const history = new ProjectHistory<RoomaObject>(HISTORY_LIMIT);
+    let dragBefore: RoomaObject | null = null;
+    const allocatedIds = new Set(initialProject.objects.map(object => object.id));
+    const allocateId = (kind: string) => {
+      let id = `${kind}-${serial++}`;
+      while (allocatedIds.has(id)) id = `${kind}-${serial++}`;
+      allocatedIds.add(id);
+      return id;
+    };
     const geometries = new Map<string, THREE.BufferGeometry>();
     const edgeGeometries = new Map<string, THREE.EdgesGeometry>();
     const geometry = <T extends THREE.BufferGeometry>(key: string, factory: () => T) => {
@@ -286,19 +317,12 @@ export default function Home() {
       return mesh;
     };
     const addPickProxy = (group: THREE.Group) => {
-      const savedPosition = group.position.clone();
-      const savedRotation = group.rotation.clone();
-      const savedScale = group.scale.clone();
-      group.position.set(0, 0, 0);
-      group.rotation.set(0, 0, 0);
-      group.scale.set(1, 1, 1);
-      group.updateMatrixWorld(true);
-      const bounds = new THREE.Box3().setFromObject(group);
-      const size = bounds.getSize(new THREE.Vector3());
-      const center = bounds.getCenter(new THREE.Vector3());
+      const semanticSize = group.userData.parametricSize as Point3;
+      const size = new THREE.Vector3(semanticSize.x, semanticSize.y, semanticSize.z);
+      const center = new THREE.Vector3(0, semanticSize.y / 2, 0);
       group.userData.localBounds = {
-        min: bounds.min.toArray(),
-        max: bounds.max.toArray(),
+        min: [-semanticSize.x / 2, 0, -semanticSize.z / 2],
+        max: [semanticSize.x / 2, semanticSize.y, semanticSize.z / 2],
         size: size.toArray(),
       };
       const proxy = new THREE.Mesh(geometry(`proxy:${size.x.toFixed(3)}:${size.y.toFixed(3)}:${size.z.toFixed(3)}`, () => new THREE.BoxGeometry(size.x, size.y, size.z)), materials.pick);
@@ -308,15 +332,17 @@ export default function Home() {
       group.add(proxy);
       group.userData.pickProxy = proxy;
       pickTargets.add(proxy);
-      group.position.copy(savedPosition);
-      group.rotation.copy(savedRotation);
-      group.scale.copy(savedScale);
-      group.updateMatrixWorld(true);
     };
     const updateBounds = (group: THREE.Group) => {
-      group.updateWorldMatrix(true, true);
+      const definition = {
+        position: { x: group.position.x, y: group.position.y, z: group.position.z },
+        rotationY: THREE.MathUtils.radToDeg(group.rotation.y),
+        size: group.userData.parametricSize as Point3,
+      };
+      const semantic = boundsForSizedObject(definition);
       const bounds = boundsCache.get(group) ?? new THREE.Box3();
-      bounds.setFromObject(group);
+      bounds.min.set(semantic.min.x, semantic.min.y, semantic.min.z);
+      bounds.max.set(semantic.max.x, semantic.max.y, semantic.max.z);
       boundsCache.set(group, bounds);
       return bounds;
     };
@@ -352,8 +378,8 @@ export default function Home() {
       } else if (kind === "partition") {
         box(w, h, d, 0, h / 2, 0, group, "wall"); box(w, t, d, 0, t / 2, 0, group, "accent"); box(t, h, d, -w / 2 + t / 2, h / 2, 0, group, "accent");
       } else if (kind === "sofa" || kind === "armchair") {
-        const arm = Math.min(.18, w * .12); const seatH = h * .42; const backD = Math.min(.16, d * .18);
-        box(w - arm * 2, seatH * .38, d * .72, 0, seatH, d * .06, group); box(w, h - seatH * .45, backD, 0, seatH + (h - seatH * .45) / 2, -d / 2 + backD / 2, group); box(arm, h * .62, d, -w / 2 + arm / 2, h * .31, 0, group); box(arm, h * .62, d, w / 2 - arm / 2, h * .31, 0, group); box(w - arm * 2.3, t, d * .65, 0, t / 2, d * .03, group);
+        const arm = Math.min(.18, w * .12); const seatH = h * .42; const backD = Math.min(.16, d * .18); const backH = h - seatH;
+        box(w - arm * 2, seatH * .38, d * .72, 0, seatH, d * .06, group); box(w, backH, backD, 0, seatH + backH / 2, -d / 2 + backD / 2, group); box(arm, h * .62, d, -w / 2 + arm / 2, h * .31, 0, group); box(arm, h * .62, d, w / 2 - arm / 2, h * .31, 0, group); box(w - arm * 2.3, t, d * .65, 0, t / 2, d * .03, group);
       } else if (kind === "diningTable") {
         const top = Math.min(.1, h * .13); box(w, top, d, 0, h - top / 2, 0, group); fourLegs(h - top);
       } else if (kind === "bed") {
@@ -362,15 +388,15 @@ export default function Home() {
       } else if (kind === "wardrobe") {
         box(w, h, d, 0, h / 2, 0, group); const doors = Math.max(1, Math.round(w / .65)); for (let i = 1; i < doors; i++) box(t * .22, h * .94, d * .02, -w / 2 + (w / doors) * i, h / 2, d / 2, group, "accent");
       } else if (kind === "shelf") {
-        const side = Math.min(.07, w * .08); box(side, h, d, -w / 2 + side / 2, h / 2, 0, group); box(side, h, d, w / 2 - side / 2, h / 2, 0, group); const levels = Math.max(2, Math.round(h / .42)); for (let i = 0; i <= levels; i++) box(w, t * .55, d, 0, (h / levels) * i, 0, group);
+        const side = Math.min(.07, w * .08); const shelfThickness = t * .55; box(side, h, d, -w / 2 + side / 2, h / 2, 0, group); box(side, h, d, w / 2 - side / 2, h / 2, 0, group); const levels = Math.max(2, Math.round(h / .42)); for (let i = 0; i <= levels; i++) box(w, shelfThickness, d, 0, shelfThickness / 2 + (h - shelfThickness) * (i / levels), 0, group);
       } else if (kind === "baseCabinet" || kind === "island") {
         const top = Math.min(.08, h * .1); const plinth = Math.min(.1, h * .12); box(w * .95, h - top - plinth, d * .94, 0, plinth + (h - top - plinth) / 2, 0, group); box(w, top, d, 0, h - top / 2, 0, group, "accent"); box(w * .84, plinth, d * .8, 0, plinth / 2, 0, group); const fronts = Math.max(1, Math.round(w / .6)); for (let i = 1; i < fronts; i++) box(t * .18, h * .68, d * .02, -w / 2 + (w / fronts) * i, h * .52, d / 2, group, "accent");
       } else if (kind === "bathtub") {
         const rim = Math.min(.12, Math.min(w, d) * .13); const base = Math.min(.16, h * .28); box(w, base, d, 0, base / 2, 0, group); box(w, h - base, rim, 0, base + (h - base) / 2, -d / 2 + rim / 2, group); box(w, h - base, rim, 0, base + (h - base) / 2, d / 2 - rim / 2, group); box(rim, h - base, d - rim * 2, -w / 2 + rim / 2, base + (h - base) / 2, 0, group); box(rim, h - base, d - rim * 2, w / 2 - rim / 2, base + (h - base) / 2, 0, group);
       } else if (kind === "vanity") {
-        const top = Math.min(.1, h * .12); const bodyH = h * .68; box(w * .92, bodyH, d * .88, 0, bodyH / 2 + h * .12, 0, group); box(w, top, d, 0, h - top / 2, 0, group, "accent"); cylinder(Math.min(w * .22, d * .34), top * .7, 0, h - top * .25, 0, group);
+        const top = Math.min(.1, h * .12); const bodyH = h * .68; box(w * .92, bodyH, d * .88, 0, bodyH / 2 + h * .12, 0, group); box(w, top, d, 0, h - top / 2, 0, group, "accent"); cylinder(Math.min(w * .22, d * .34), top * .7, 0, h - top * .35, 0, group);
       } else if (kind === "toilet") {
-        const tankD = d * .34; box(w, h * .72, tankD, 0, h * .36, -d / 2 + tankD / 2, group); const bowlD = d - tankD * .6; box(w * .78, h * .36, bowlD, 0, h * .25, d * .11, group); box(w * .86, h * .09, bowlD * .94, 0, h * .49, d * .11, group, "accent"); box(w * .5, h * .3, d * .48, 0, h * .15, d * .06, group);
+        const tankD = d * .34; box(w, h, tankD, 0, h / 2, -d / 2 + tankD / 2, group); const bowlD = d - tankD * .6; box(w * .78, h * .36, bowlD, 0, h * .25, d * .11, group); box(w * .86, h * .09, bowlD * .94, 0, h * .49, d * .11, group, "accent"); box(w * .5, h * .3, d * .48, 0, h * .15, d * .06, group);
       } else if (kind === "stool") {
         const seat = Math.min(.1, h * .18); cylinder(Math.min(w, d) / 2, seat, 0, h - seat / 2, 0, group); fourLegs(h - seat, Math.min(w, d) * .28);
       } else if (kind === "plant") {
@@ -390,7 +416,9 @@ export default function Home() {
       updateBounds(group);
     };
     const finishObject = (group: THREE.Group, kind: string, label: string, position: [number, number, number], requestedSize?: Point3, requestedId?: string) => {
-      group.userData = { id: requestedId ?? `${kind}-${serial++}`, kind, label, selectable: true };
+      const id = requestedId ?? allocateId(kind);
+      allocatedIds.add(id);
+      group.userData = { id, kind, label, selectable: true };
       buildParametric(group, kind, requestedSize ?? getParametricAsset(kind)?.defaultSize ?? { x: 1, y: 1, z: 1 });
       group.traverse(child => { child.userData.root = group; }); addPickProxy(group); group.position.set(...position); selectable.add(group); layout.add(group); updateBounds(group); return group;
     };
@@ -446,6 +474,16 @@ export default function Home() {
       addMeasurementLine(worldPoint(localMax.x + offset("x", 0.16), localMax.y + offset("y", 0.12), localMin.z), worldPoint(localMax.x + offset("x", 0.16), localMax.y + offset("y", 0.12), localMax.z), colors.z, `Z ${spatial.dimensions.z.toFixed(2)} m`);
       for (const clearance of spatial.clearances) { const start = center.clone(); const end = center.clone(); start[clearance.axis] = clearance.direction === "negative" ? min[clearance.axis] : max[clearance.axis]; end[clearance.axis] = clearance.referenceCoordinate; addMeasurementLine(start, end, colors[clearance.axis], clearance.distance.toFixed(2), 0.62); }
     };
+    const definitionOf = (object: THREE.Group): RoomaObject => ({
+      id: object.userData.id as string,
+      kind: object.userData.kind as string,
+      label: object.userData.label as string,
+      position: { x: object.position.x, y: object.position.y, z: object.position.z },
+      rotationY: THREE.MathUtils.radToDeg(object.rotation.y),
+      size: { ...(object.userData.parametricSize as Point3) },
+    });
+    const syncSceneObjects = () => setSceneObjects([...selectable].map(object => ({ id: object.userData.id as string, label: object.userData.label as string })));
+    const syncHistoryState = () => { setCanUndo(history.canUndo); setCanRedo(history.canRedo); };
     const getMetrics = (object: THREE.Group) => {
       const selectedBox = updateBounds(object);
       const obstacles = [...selectable].filter(candidate => candidate !== object).map(candidate => ({ id: candidate.userData.id as string, label: candidate.userData.label as string, bounds: toBounds3(boundsCache.get(candidate) ?? updateBounds(candidate)) }));
@@ -453,14 +491,15 @@ export default function Home() {
       const semanticSize = object.userData.parametricSize as Point3 | undefined;
       const baseSize = (object.userData.localBounds as { size: [number, number, number] }).size;
       spatial.dimensions = semanticSize ?? { x: baseSize[0], y: baseSize[1], z: baseSize[2] };
-      return { selectedBox, spatial };
+      const issues = spatialIssuesForObject(room, definitionOf(object), [...selectable].map(definitionOf)).map(issue => issue.message);
+      return { selectedBox, spatial, issues };
     };
     const refreshMeasurements = () => {
       measurementTimer = null;
       if (!current) { clearMeasurementLayer(); setMetrics(null); return; }
-      const { selectedBox, spatial } = getMetrics(current); drawMeasurements(current, selectedBox, spatial);
+      const { selectedBox, spatial, issues } = getMetrics(current); drawMeasurements(current, selectedBox, spatial);
       const definition = getParametricAsset(current.userData.kind as string);
-      setMetrics({ ...spatial, position: { x: current.position.x, y: current.position.y, z: current.position.z }, rotationY: THREE.MathUtils.radToDeg(current.rotation.y), limits: definition ? { min: definition.minSize, max: definition.maxSize } : undefined }); scheduleRender(false);
+      setMetrics({ ...spatial, position: { x: current.position.x, y: current.position.y, z: current.position.z }, rotationY: THREE.MathUtils.radToDeg(current.rotation.y), limits: definition ? { min: definition.minSize, max: definition.maxSize } : undefined, issues }); scheduleRender(false);
     };
     const scheduleMeasurementRefresh = (immediate = false) => { if (measurementTimer) clearTimeout(measurementTimer); if (immediate) refreshMeasurements(); else measurementTimer = setTimeout(refreshMeasurements, 70); };
     let persistScene = () => {};
@@ -468,12 +507,12 @@ export default function Home() {
       current = object;
       if (object) {
         if (currentToolMode === "select") transform.detach(); else transform.attach(object);
-        setSelected(object.userData.label || "未命名对象");
+        setSelectedObject({ id: object.userData.id as string, label: object.userData.label || "未命名对象" });
         setInspectorOpen(inspectorOpenPreference.current);
         if (window.innerWidth <= 760) setCatalogueOpen(false);
       } else {
         transform.detach();
-        setSelected("未选择对象");
+        setSelectedObject(null);
         setInspectorOpen(false);
       }
       scheduleMeasurementRefresh(true);
@@ -491,22 +530,63 @@ export default function Home() {
           measurementsVisible: measurementLayer.visible,
           selectedObjectId: current ? current.userData.id as string : null,
         },
-        objects: [...selectable].map(object => ({
-          id: object.userData.id as string,
-          kind: object.userData.kind as string,
-          label: object.userData.label as string,
-          position: { x: object.position.x, y: object.position.y, z: object.position.z },
-          rotationY: THREE.MathUtils.radToDeg(object.rotation.y),
-          size: { ...(object.userData.parametricSize as Point3) },
-        })),
+        objects: [...selectable].map(definitionOf),
       };
-      persistRoomaProject(project);
+      const result = persistRoomaProject(project);
+      if (result.ok) { setSaveState("saved"); setSaveMessage("本地已保存"); }
+      else { setSaveState("error"); setSaveMessage("保存失败，请勿刷新"); setProjectNotice(`浏览器无法保存工程：${result.error}`); }
     };
 
-    const snapshot = (object: THREE.Group) => ({ object, position: object.position.clone(), rotation: object.rotation.clone(), scale: object.scale.clone(), size: { ...(object.userData.parametricSize as Point3) } });
-    const pushUndo = (object: THREE.Group) => { undoStack.push(snapshot(object)); if (undoStack.length > HISTORY_LIMIT) undoStack.shift(); };
-    const restore = (state: ReturnType<typeof snapshot>) => { rebuildObject(state.object, state.size); state.object.position.copy(state.position); state.object.rotation.copy(state.rotation); state.object.scale.copy(state.scale); updateBounds(state.object); select(state.object); scheduleRender(true); persistScene(); };
-    const mutateCurrent = (mutation: (object: THREE.Group) => void) => { if (!current) return; pushUndo(current); redoStack.length = 0; mutation(current); updateBounds(current); scheduleMeasurementRefresh(true); scheduleRender(true); persistScene(); };
+    const findObjectById = (id: string) => [...selectable].find(object => object.userData.id === id) ?? null;
+    const removeObjectFromScene = (object: THREE.Group) => {
+      if (current === object) transform.detach();
+      selectable.delete(object);
+      pickTargets.delete(object.userData.pickProxy as THREE.Mesh);
+      boundsCache.delete(object);
+      layout.remove(object);
+      if (current === object) current = null;
+      if (hovered === object) hovered = null;
+    };
+    const upsertDefinition = (definition: RoomaObject) => {
+      let object = findObjectById(definition.id);
+      if (!object) object = makeObject(definition.kind, definition.label, [definition.position.x, definition.position.y, definition.position.z], definition.size, definition.id);
+      else {
+        object.userData.label = definition.label;
+        rebuildObject(object, definition.size);
+        object.position.set(definition.position.x, definition.position.y, definition.position.z);
+      }
+      object.rotation.y = THREE.MathUtils.degToRad(definition.rotationY);
+      updateBounds(object);
+      return object;
+    };
+    const applyHistoryState = (state: RoomaObject | null, id: string) => {
+      const existing = findObjectById(id);
+      if (!state) {
+        if (existing) removeObjectFromScene(existing);
+        select(null);
+      } else select(upsertDefinition(state));
+      setObjectCount(selectable.size);
+      syncSceneObjects();
+      scheduleMeasurementRefresh(true);
+      updateInteractionFeedback();
+      scheduleRender(true);
+      persistScene();
+    };
+    const recordHistory = (before: RoomaObject | null, after: RoomaObject | null) => {
+      if (JSON.stringify(before) === JSON.stringify(after)) return;
+      history.record({ before, after });
+      syncHistoryState();
+    };
+    const mutateCurrent = (mutation: (object: THREE.Group) => void) => {
+      if (!current) return;
+      const before = definitionOf(current);
+      mutation(current);
+      updateBounds(current);
+      recordHistory(before, definitionOf(current));
+      scheduleMeasurementRefresh(true);
+      scheduleRender(true);
+      persistScene();
+    };
 
     const raycaster = new THREE.Raycaster(); const pointer = new THREE.Vector2();
     const touchPointers = new Set<number>();
@@ -544,7 +624,18 @@ export default function Home() {
     renderer.domElement.addEventListener("pointerup", onPointerEnd);
     renderer.domElement.addEventListener("pointercancel", onPointerEnd);
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
-    transform.addEventListener("dragging-changed", event => { dragging = Boolean(event.value); controls.enabled = !dragging; if (dragging && current) pushUndo(current); if (!dragging) { redoStack.length = 0; scheduleMeasurementRefresh(true); persistScene(); } scheduleRender(dragging); });
+    transform.addEventListener("dragging-changed", event => {
+      dragging = Boolean(event.value);
+      controls.enabled = !dragging;
+      if (dragging && current) dragBefore = definitionOf(current);
+      if (!dragging) {
+        if (dragBefore && current) recordHistory(dragBefore, definitionOf(current));
+        dragBefore = null;
+        scheduleMeasurementRefresh(true);
+        persistScene();
+      }
+      scheduleRender(dragging);
+    });
     transform.addEventListener("objectChange", () => { if (current) updateBounds(current); updateInteractionFeedback(); scheduleMeasurementRefresh(false); scheduleRender(true); });
     controls.addEventListener("change", () => scheduleRender(false));
 
@@ -552,9 +643,41 @@ export default function Home() {
     const resizeObserver = new ResizeObserver(onResize); resizeObserver.observe(host);
 
     const api: SceneController = {
-      add: (kind, label) => { const object = makeObject(kind, label, [0.25 + (serial % 3) * 0.35, 0, 0.25]); select(object); setObjectCount(selectable.size); scheduleRender(true); persistScene(); },
-      duplicate: () => { if (!current) return; const source = current; const object = makeObject(source.userData.kind, `${source.userData.label} 副本`, [source.position.x + 0.25, source.position.y, source.position.z + 0.25], { ...(source.userData.parametricSize as Point3) }); object.rotation.copy(source.rotation); select(object); setObjectCount(selectable.size); scheduleRender(true); persistScene(); },
-      remove: () => { if (!current) return; const removed = current; transform.detach(); selectable.delete(removed); pickTargets.delete(removed.userData.pickProxy); boundsCache.delete(removed); layout.remove(removed); for (let i = undoStack.length - 1; i >= 0; i--) if (undoStack[i].object === removed) undoStack.splice(i, 1); for (let i = redoStack.length - 1; i >= 0; i--) if (redoStack[i].object === removed) redoStack.splice(i, 1); current = null; if (hovered === removed) hovered = null; setSelected("未选择对象"); setMetrics(null); clearMeasurementLayer(); setObjectCount(selectable.size); updateInteractionFeedback(); scheduleRender(true); persistScene(); },
+      add: (kind, label) => {
+        const object = makeObject(kind, label, [0.25 + (serial % 3) * 0.35, 0, 0.25]);
+        recordHistory(null, definitionOf(object));
+        select(object);
+        setObjectCount(selectable.size);
+        syncSceneObjects();
+        scheduleRender(true);
+        persistScene();
+      },
+      duplicate: () => {
+        if (!current) return;
+        const source = current;
+        const object = makeObject(source.userData.kind, `${source.userData.label} 副本`, [source.position.x + 0.25, source.position.y, source.position.z + 0.25], { ...(source.userData.parametricSize as Point3) });
+        object.rotation.copy(source.rotation);
+        recordHistory(null, definitionOf(object));
+        select(object);
+        setObjectCount(selectable.size);
+        syncSceneObjects();
+        scheduleRender(true);
+        persistScene();
+      },
+      remove: () => {
+        if (!current) return;
+        const before = definitionOf(current);
+        removeObjectFromScene(current);
+        recordHistory(before, null);
+        select(null);
+        setMetrics(null);
+        clearMeasurementLayer();
+        setObjectCount(selectable.size);
+        syncSceneObjects();
+        updateInteractionFeedback();
+        scheduleRender(true);
+        persistScene();
+      },
       setTool: mode => {
         currentToolMode = mode;
         if (mode === "select") transform.detach();
@@ -565,15 +688,16 @@ export default function Home() {
         updateInteractionFeedback();
       },
       setView: mode => { currentViewMode = mode; activeCamera = mode === "2D" ? orthographicCamera : mode === "ISO" ? isometricCamera : perspectiveCamera; controls.object = activeCamera; transform.camera = activeCamera; if (mode === "2D") { orthographicCamera.position.set(0, 10, 0); orthographicCamera.zoom = 1; orthographicCamera.updateProjectionMatrix(); controls.target.set(0, 0, 0); controls.enableRotate = false; } else if (mode === "ISO") { isometricCamera.position.set(6.4, 6.4, 6.4); isometricCamera.zoom = 1; isometricCamera.updateProjectionMatrix(); controls.target.set(0, 1, 0); controls.enableRotate = false; } else { perspectiveCamera.position.set(6.8, 5.7, 7.6); controls.target.set(0, 1, 0); controls.enableRotate = true; } controls.update(); scheduleRender(false); persistScene(); },
-      setColorMode: mode => { currentColorMode = mode; const theme = sceneThemes[mode]; scene.background = new THREE.Color(theme.background); if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(theme.background); materials.furniture.color.setHex(theme.surface); materials.floor.color.setHex(theme.surface); materials.accent.color.setHex(theme.ink); materials.wall.color.setHex(theme.surface); materials.plant.color.setHex(theme.tint); sketchLineMaterial.color.setHex(theme.ink); selectedBounds.material.color.setHex(theme.ink); hoverBounds.material.color.setHex(theme.ink); rotationMaterial.color.setHex(theme.ink); (handle.material as THREE.MeshBasicMaterial).color.setHex(theme.ink); const gridMaterial = grid.material as THREE.LineBasicMaterial | THREE.LineBasicMaterial[]; const gridList = Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial]; gridList.forEach((material, index) => { material.color.setHex(index === 0 ? theme.ink : theme.grid); material.opacity = index === 0 ? 0.34 : 0.16; }); scheduleMeasurementRefresh(true); scheduleRender(true); persistScene(); },
+      setColorMode: mode => { currentColorMode = mode; const theme = sceneThemes[mode]; scene.background = new THREE.Color(theme.background); if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(theme.background); materials.furniture.color.setHex(theme.surface); materials.floor.color.setHex(theme.surface); materials.accent.color.setHex(theme.ink); materials.wall.color.setHex(theme.surface); materials.plant.color.setHex(theme.tint); sketchLineMaterial.color.setHex(theme.ink); selectedBoundsMaterial.color.setHex(theme.ink); hoverBoundsMaterial.color.setHex(theme.ink); rotationMaterial.color.setHex(theme.ink); (handle.material as THREE.MeshBasicMaterial).color.setHex(theme.ink); const gridMaterial = grid.material as THREE.LineBasicMaterial | THREE.LineBasicMaterial[]; const gridList = Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial]; gridList.forEach((material, index) => { material.color.setHex(index === 0 ? theme.ink : theme.grid); material.opacity = index === 0 ? 0.34 : 0.16; }); scheduleMeasurementRefresh(true); scheduleRender(true); persistScene(); },
       setMeasurementsVisible: visible => { measurementLayer.visible = visible; scheduleMeasurementRefresh(true); persistScene(); },
       setPosition: (axis, value) => mutateCurrent(object => { object.position[axis] = value; }),
       setRotation: value => mutateCurrent(object => { object.rotation.y = THREE.MathUtils.degToRad(value); }),
-      setDimension: (axis, value) => mutateCurrent(object => { const before = new THREE.Box3().setFromObject(object); const currentSize = object.userData.parametricSize as Point3; rebuildObject(object, { ...currentSize, [axis]: value }); const after = new THREE.Box3().setFromObject(object); if (axis === "y") object.position.y += before.min.y - after.min.y; }),
+      setDimension: (axis, value) => mutateCurrent(object => { const currentSize = object.userData.parametricSize as Point3; rebuildObject(object, { ...currentSize, [axis]: value }); }),
       setClearance: (clearance, value) => mutateCurrent(object => { const latest = getMetrics(object).spatial.clearances.find(item => item.key === clearance.key); if (latest) object.position[clearance.axis] += movementForClearance(latest, value); }),
-      undo: () => { const state = undoStack.pop(); if (!state || !selectable.has(state.object)) return; redoStack.push(snapshot(state.object)); restore(state); },
-      redo: () => { const state = redoStack.pop(); if (!state || !selectable.has(state.object)) return; pushUndo(state.object); restore(state); },
+      undo: () => { const entry = history.takeUndo(); if (!entry) return; applyHistoryState(entry.before, (entry.before ?? entry.after)?.id ?? ""); syncHistoryState(); },
+      redo: () => { const entry = history.takeRedo(); if (!entry) return; applyHistoryState(entry.after, (entry.after ?? entry.before)?.id ?? ""); syncHistoryState(); },
       reset: () => { if (activeCamera === orthographicCamera) { orthographicCamera.position.set(0, 10, 0); orthographicCamera.zoom = 1; orthographicCamera.updateProjectionMatrix(); controls.target.set(0, 0, 0); } else if (activeCamera === isometricCamera) { isometricCamera.position.set(6.4, 6.4, 6.4); isometricCamera.zoom = 1; isometricCamera.updateProjectionMatrix(); controls.target.set(0, 1, 0); } else { perspectiveCamera.position.set(6.8, 5.7, 7.6); controls.target.set(0, 1, 0); } controls.update(); scheduleRender(false); },
+      selectById: id => { const object = findObjectById(id); if (object) select(object); },
     };
     controller.current = api;
     api.setView(initialProject.project.view);
@@ -596,7 +720,7 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); renderer.domElement.removeEventListener("pointermove", onPointerMove); renderer.domElement.removeEventListener("pointerup", onPointerEnd); renderer.domElement.removeEventListener("pointercancel", onPointerEnd); renderer.domElement.removeEventListener("pointerleave", onPointerLeave); resizeObserver.disconnect(); renderScheduler.dispose(); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
+      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); renderer.domElement.removeEventListener("pointermove", onPointerMove); renderer.domElement.removeEventListener("pointerup", onPointerEnd); renderer.domElement.removeEventListener("pointercancel", onPointerEnd); renderer.domElement.removeEventListener("pointerleave", onPointerLeave); resizeObserver.disconnect(); renderScheduler.dispose(); if (storageStatusFrame) cancelAnimationFrame(storageStatusFrame); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); controls.dispose(); transform.dispose();
       const disposedGeometries = new Set<THREE.BufferGeometry>(); const disposedMaterials = new Set<THREE.Material>();
       scene.traverse(object => { const renderable = object as THREE.Mesh | THREE.Line | THREE.Sprite; if ("geometry" in renderable && renderable.geometry && !disposedGeometries.has(renderable.geometry)) { disposedGeometries.add(renderable.geometry); renderable.geometry.dispose(); } if ("material" in renderable && renderable.material) { const list = Array.isArray(renderable.material) ? renderable.material : [renderable.material]; list.forEach(material => { if (disposedMaterials.has(material)) return; disposedMaterials.add(material); const map = (material as THREE.MeshStandardMaterial).map; if (map) map.dispose(); material.dispose(); }); } });
       renderer.dispose(); renderer.domElement.remove(); controller.current = null;
@@ -608,21 +732,29 @@ export default function Home() {
   const changeColorMode = (next: ColorMode) => { setColorMode(next); controller.current?.setColorMode(next); };
   const toggleMeasurements = () => { const next = !measurementsVisible; setMeasurementsVisible(next); controller.current?.setMeasurementsVisible(next); };
   const toggleCatalogue = () => setCatalogueOpen(value => { const next = !value; if (next && window.innerWidth <= 760) setInspectorOpen(false); return next; });
-  const toggleInspector = () => setInspectorOpen(value => { const next = !value; inspectorOpenPreference.current = next; window.localStorage.setItem("rooma:inspector", next ? "expanded" : "collapsed"); if (next && window.innerWidth <= 760) setCatalogueOpen(false); return next; });
+  const toggleInspector = () => setInspectorOpen(value => { const next = !value; inspectorOpenPreference.current = next; try { window.localStorage.setItem("rooma:inspector", next ? "expanded" : "collapsed"); } catch { setSaveState("error"); setSaveMessage("本地保存不可用"); setProjectNotice("属性栏偏好无法保存，工程存储也可能不可用。"); } if (next && window.innerWidth <= 760) setCatalogueOpen(false); return next; });
+  const restoreBackup = () => {
+    const result = restoreRoomaProjectBackupFromBrowser();
+    if (result.ok) window.location.reload();
+    else { setSaveState("error"); setSaveMessage("恢复失败"); setProjectNotice(result.error); }
+  };
   const normalizedQuery = catalogueQuery.trim().toLowerCase();
   const visibleAssets = PARAMETRIC_ASSETS.filter(asset => asset.category === activeCategory && (!normalizedQuery || `${asset.label} ${asset.kind}`.toLowerCase().includes(normalizedQuery)));
-  const hasSelection = selected !== "未选择对象";
+  const hasSelection = selectedObject !== null;
 
   return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${hasSelection ? inspectorOpen ? "" : "inspector-collapsed" : "inspector-hidden"}`} data-color-mode={colorMode}>
     {/* THESIS: A working architectural model, not a dashboard; the room itself leads. OWN-WORLD: White drafting surface, single-color edges, sparse same-hue fills, precise compact controls. STORY: Choose an asset on the left, compose it on the canvas, then edit its properties on the right. FIRST VIEWPORT: A three-pane workbench with a left asset catalogue, central room canvas, right object inspector, and common tools in the topbar. FORM: SketchUp-style operating surface, pinned by the user's references; orthographic isometric staging. */}
-    <header className="topbar"><div className="brand">ROOMA</div><label className="project-title"><span className="status-dot" /><select aria-label="切换项目文件" value={projectName} onChange={() => undefined}><option value={projectName}>{projectName}</option></select><svg className="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6 3.5 3.5L11.5 6" /></svg></label><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 6.8 16 2.1-6 6.1-2.2L5 3Z" /></svg></IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg></IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.8 9A8 8 0 0 0 5.4 6.2L4 8M5.2 15A8 8 0 0 0 18.6 17.8L20 16" /></svg></IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12M20 6v12M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg></IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" onClick={() => controller.current?.undo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" /></svg></IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" onClick={() => controller.current?.redo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" /></svg></IconButton><button className="avatar" aria-label="账户">LK</button></div></header>
-    <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`} aria-label="参数化素材"><button className="catalogue-toggle" onClick={toggleCatalogue} aria-expanded={catalogueOpen} aria-label="展开或收起标模库">{catalogueOpen ? "‹" : "›"}</button>{catalogueOpen && <div className="catalogue-content"><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></div>}</aside>
-    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><label className="room-switcher"><select aria-label="切换房间" value={roomInfo.name} onChange={() => undefined}><option value={roomInfo.name}>{roomInfo.name}</option></select><svg className="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6 3.5 3.5L11.5 6" /></svg></label><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="touch-hint" aria-label="触控提示">双指平移 · 捏合缩放</div></section>
-    {hasSelection && <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selected}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
+    <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className={`status-dot ${saveState}`} /><span className="project-name">{projectName}</span><small>{saveMessage}</small></div><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 6.8 16 2.1-6 6.1-2.2L5 3Z" /></svg></IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg></IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.8 9A8 8 0 0 0 5.4 6.2L4 8M5.2 15A8 8 0 0 0 18.6 17.8L20 16" /></svg></IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12M20 6v12M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg></IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" disabled={!canUndo} onClick={() => controller.current?.undo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" /></svg></IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" disabled={!canRedo} onClick={() => controller.current?.redo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" /></svg></IconButton><span className="local-mode">本地模式</span></div></header>
+    {projectNotice && <div className={`project-notice ${saveState === "error" ? "error" : ""}`} role="status"><span>{projectNotice}</span>{backupAvailable && <button onClick={restoreBackup}>恢复原草稿</button>}<button aria-label="关闭提示" onClick={() => setProjectNotice(null)}>×</button></div>}
+    <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`} aria-label="参数化素材"><button className="catalogue-toggle" onClick={toggleCatalogue} aria-expanded={catalogueOpen} aria-label="展开或收起标模库">{catalogueOpen ? "‹" : "›"}</button>{catalogueOpen && <div className="catalogue-content"><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><div className="scene-object-section"><div><b>当前对象</b><span>{sceneObjects.length}</span></div><ul className="scene-object-list" aria-label="场景对象">{sceneObjects.map(object => <li key={object.id}><button aria-pressed={selectedObject?.id === object.id} className={selectedObject?.id === object.id ? "active" : ""} onClick={() => controller.current?.selectById(object.id)}><span>{object.label}</span><small>{object.id}</small></button></li>)}</ul></div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></div>}</aside>
+    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><div className="room-switcher" aria-label="当前房间">{roomInfo.name}</div><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="touch-hint" aria-label="触控提示">双指平移 · 捏合缩放</div></section>
+    {hasSelection && <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selectedObject?.label}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
+      {metrics.issues.length > 0 && <div className="spatial-warning" role="alert"><b>布局需要检查</b>{metrics.issues.map(issue => <span key={issue}>{issue}</span>)}</div>}
       <div className="inspector-section"><h3>位置与旋转</h3><div className="metric-grid position-grid">{AXES.map(axis => <div className="metric-cell" key={axis}><span>{axis.toUpperCase()}</span><MetricInput ariaLabel={`${axis.toUpperCase()} 位置`} value={metrics.position[axis]} onCommit={value => controller.current?.setPosition(axis, value)} /></div>)}<div className="metric-cell"><span>旋转 Y</span><MetricInput ariaLabel="Y 轴旋转" unit="°" step={1} value={metrics.rotationY} onCommit={value => controller.current?.setRotation(value)} /></div></div></div>
       <div className="inspector-section"><div className="section-heading"><h3>三维尺寸</h3><span>结构随尺寸自动重建</span></div><div className="metric-grid dimension-grid">{AXES.map(axis => <div className={`metric-cell axis-${axis}`} key={axis}><span>{axisLabels[axis]}</span><MetricInput ariaLabel={`${axisLabels[axis]}尺寸`} min={metrics.limits?.min[axis] ?? .01} max={metrics.limits?.max[axis]} value={metrics.dimensions[axis]} onCommit={value => controller.current?.setDimension(axis, value)} /></div>)}</div><p className="parametric-note">构件细节与常用比例保持不变，不会被拉伸变形。</p></div>
       <div className="inspector-section clearance-section"><div className="section-heading"><h3>最近空间距离</h3><span>参照墙体或物体</span></div><div className="clearance-grid">{metrics.clearances.map(clearance => <div className={`clearance-cell axis-${clearance.axis}`} key={clearance.key}><div><b>{directionLabels[clearance.key]}</b><small>{clearance.referenceLabel}</small></div><MetricInput ariaLabel={`${directionLabels[clearance.key]}到${clearance.referenceLabel}的距离`} min={0} value={clearance.distance} onCommit={value => controller.current?.setClearance(clearance, value)} /></div>)}</div></div>
       <div className="property-actions"><button onClick={() => controller.current?.remove()}>删除对象</button><button onClick={() => controller.current?.duplicate()}>复制对象</button></div>
     </> : <div className="inspector-empty">正在读取对象属性…</div>}</div>}</section>}
+    <div className="sr-only" aria-live="polite">{selectedObject ? `已选择${selectedObject.label}` : "未选择对象"}；{saveMessage}</div>
   </main>;
 }

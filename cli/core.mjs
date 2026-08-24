@@ -1,5 +1,6 @@
 import { ASSET_CATEGORIES, PARAMETRIC_ASSETS, getAsset } from "./catalogue.mjs";
 import { readFileSync } from "node:fs";
+import { PROJECT_SCHEMA_VERSION, ROOM_LIMITS, boundsForSizedObject, objectOutsideRoomBounds } from "../lib/project-domain.js";
 
 export const DEFAULT_APP_URL = "https://rooma-3d-editor.ron-nextop.workers.dev/";
 export const HISTORY_LIMIT = 100;
@@ -25,17 +26,17 @@ const nonEmpty = value => typeof value === "string" && value.trim().length > 0;
 export function validateProject(project) {
   const errors = [];
   if (!isObject(project)) return { valid: false, errors: ["项目根节点必须是对象"] };
-  if (project.schemaVersion !== 1) errors.push("schemaVersion 必须为 1");
+  if (project.schemaVersion !== PROJECT_SCHEMA_VERSION) errors.push(`schemaVersion 必须为 ${PROJECT_SCHEMA_VERSION}`);
   if (!isObject(project.project)) errors.push("project 必须是对象");
   const metadata = isObject(project.project) ? project.project : {};
   if (!nonEmpty(metadata.name)) errors.push("project.name 必须是非空字符串");
   if (!isObject(metadata.room)) errors.push("project.room 必须是对象");
   const room = isObject(metadata.room) ? metadata.room : {};
   if (!nonEmpty(room.name)) errors.push("project.room.name 必须是非空字符串");
-  for (const field of ["width", "depth", "height"]) {
-    if (!finite(room[field]) || room[field] <= 0) errors.push(`project.room.${field} 必须是正数`);
+  for (const field of ["width", "depth"]) {
+    if (!finite(room[field]) || room[field] < ROOM_LIMITS[field].min) errors.push(`project.room.${field} 不能小于 ${ROOM_LIMITS[field].min} m`);
   }
-  if (finite(room.height) && room.height < 1.8) errors.push("project.room.height 不能小于 1.8 m");
+  if (!finite(room.height) || room.height < ROOM_LIMITS.height.min) errors.push(`project.room.height 不能小于 ${ROOM_LIMITS.height.min} m`);
   if (!["3D", "ISO", "2D"].includes(metadata.view)) errors.push("project.view 必须是 3D、ISO 或 2D");
   if (!["blue", "red", "green", "mono"].includes(metadata.colorMode)) errors.push("project.colorMode 必须是 blue、red、green 或 mono");
   if (typeof metadata.measurementsVisible !== "boolean") errors.push("project.measurementsVisible 必须是布尔值");
@@ -135,6 +136,8 @@ export function projectUrl(project, baseUrl = process.env.ROOMA_APP_URL || DEFAU
   let url;
   try { url = new URL(baseUrl); }
   catch { throw new CliError("INVALID_URL", `无效的 Web App 地址：${baseUrl}`, 3); }
+  const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !localHttp) throw new CliError("INVALID_URL_PROTOCOL", "Web App 地址必须使用 https；本地开发仅允许 localhost 或环回地址使用 http", 3);
   url.hash = `project=${encodeProject(project)}`;
   return url.toString();
 }
@@ -159,10 +162,7 @@ export function projectSummary(project) {
 }
 
 export function objectOutsideRoom(project, object) {
-  const { width, depth, height } = project.project.room;
-  const halfWidth = object.size.x / 2;
-  const halfDepth = object.size.z / 2;
-  return object.position.x - halfWidth < -width / 2 || object.position.x + halfWidth > width / 2 || object.position.z - halfDepth < -depth / 2 || object.position.z + halfDepth > depth / 2 || object.position.y < 0 || object.position.y + object.size.y > height;
+  return objectOutsideRoomBounds(project.project.room, object);
 }
 
 const AXES = ["x", "y", "z"];
@@ -176,13 +176,7 @@ const DIRECTION_KEYS = {
 };
 
 export function boundsForObject(object) {
-  const angle = object.rotationY * Math.PI / 180;
-  const halfX = (Math.abs(Math.cos(angle)) * object.size.x + Math.abs(Math.sin(angle)) * object.size.z) / 2;
-  const halfZ = (Math.abs(Math.sin(angle)) * object.size.x + Math.abs(Math.cos(angle)) * object.size.z) / 2;
-  return {
-    min: { x: object.position.x - halfX, y: object.position.y, z: object.position.z - halfZ },
-    max: { x: object.position.x + halfX, y: object.position.y + object.size.y, z: object.position.z + halfZ },
-  };
+  return boundsForSizedObject(object);
 }
 
 function overlapsOnOtherAxes(a, b, axis) {

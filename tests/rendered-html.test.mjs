@@ -63,7 +63,7 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /sketchLineMaterial/);
   assert.match(page, /TransformControls/);
   assert.match(page, /OrbitControls/);
-  assert.match(page, /controls\.touches\.ONE = -1/);
+  assert.match(page, /controls\.touches\.ONE = null/);
   assert.match(page, /controls\.touches\.TWO = THREE\.TOUCH\.DOLLY_PAN/);
   assert.match(page, /touchGestureHadMultiple/);
   assert.match(page, /双指平移 · 捏合缩放/);
@@ -85,6 +85,13 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /hasSelection && <section/);
   assert.match(page, /inspector-hidden/);
   assert.doesNotMatch(page, /参数化尺寸请在右侧属性栏编辑|快捷键：G 移动|墙体工具|门窗工具/);
+  assert.match(page, /本地已保存/);
+  assert.match(page, /恢复原草稿/);
+  assert.match(page, /<ul className="scene-object-list" aria-label="场景对象">/);
+  assert.match(page, /aria-pressed=\{selectedObject\?\.id === object\.id\}/);
+  assert.match(page, /className="room-switcher" aria-label="当前房间"/);
+  assert.doesNotMatch(page, /aria-label="切换房间"|onChange=\{\(\) => undefined\}/);
+  assert.match(page, /spatial-warning/);
   assert.doesNotMatch(page, /保存方案|已自动保存|className="brand-mark"|className="reset-view"/);
   assert.match(css, /inspector-collapsed \{ grid-template-columns: 290px minmax\(0, 1fr\) 18px/);
   assert.doesNotMatch(page, /className="toolrail"/);
@@ -95,10 +102,12 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /等轴测/);
   assert.match(page, /蓝色.*红色.*绿色.*无色/s);
   assert.match(css, /@media \(max-width: 760px\)/);
+  assert.match(css, /\.scene-object-list button \{ min-height: 44px; \}/);
   assert.match(css, /\.catalogue \{ grid-column: 1/);
   assert.match(css, /\.workspace \{ grid-column: 2/);
   assert.match(css, /\.inspector \{ grid-column: 3/);
   assert.match(layout, /summary_large_image/);
   assert.match(packageJson, /"three"/);
+  assert.match(packageJson, /"typecheck"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });

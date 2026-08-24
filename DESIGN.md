@@ -12,7 +12,7 @@ colors:
   graphite: "#555b61"
   graphite-soft: "#f0f0ed"
   ink: "#151729"
-  muted: "#777b90"
+  muted: "#686c7c"
   line: "#e7e8ef"
   paper: "#ffffff"
   canvas-blue: "#f6f7fb"

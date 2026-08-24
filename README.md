@@ -16,7 +16,7 @@ npm run build
 
 ## ROOMA CLI
 
-CLI 与 Web App 使用同一份工程文档和素材目录：`rooma.project.json`、`rooma.default-project.json`、`rooma.assets.json`。所有长度使用米，Y 轴旋转使用角度。
+CLI 与 Web App 共享工程 schema、默认工程和素材目录，但运行时存储不同：CLI 默认读写 `rooma.project.json`，Web 读写浏览器 localStorage。所有长度使用米，Y 轴旋转使用角度。
 
 ```bash
 npm run rooma -- status
@@ -33,7 +33,9 @@ npm run rooma -- validate
 npm run rooma -- url
 ```
 
-写操作使用原子文件替换，并保留最多 100 步 `undo` / `redo` 历史。`batch` 会把一句自然语言中的多项修改合并为一个可整体撤销的事务。`url` 会把完整工程编码为 `#project=...`，线上 Web App 可直接载入，无需为每次布局修改重新部署。
+写操作通过工程锁串行化，使用 journal 恢复工程文件与历史文件的未完成提交，并保留最多 100 步 `undo` / `redo` 历史。`batch` 会把一句自然语言中的多项修改合并为一个可整体撤销的事务。配置共享 `ROOMA_HISTORY_DIR` 时，历史文件名包含工程绝对路径摘要，不同目录的同名工程不会共用历史。
+
+`url` 会把完整工程编码为 `#project=...`。Web App 将它作为一次性快照导入本地工作副本，备份已有本地草稿并从地址栏移除快照 hash；导入后的 Web 编辑刷新不会回退到旧快照。CLI 文件与已打开的浏览器标签不会自动双向同步。
 
 个人 Codex 插件安装在 `/Users/luokun/plugins/rooma-operator`。安装后可以直接说“把智能马桶向左移动 30 厘米并打开结果”或“增加一张双人床，改成绿色等轴测”。
 

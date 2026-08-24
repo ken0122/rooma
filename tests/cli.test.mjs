@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
+import { historyPathFor, journalPathFor } from "../cli/storage.mjs";
 
 const repoRoot = new URL("../", import.meta.url);
 const cliPath = new URL("../cli/rooma.mjs", import.meta.url);
@@ -25,6 +26,23 @@ function run(file, ...args) {
   try { payload = JSON.parse(result.stdout); }
   catch { throw new Error(`CLI 未返回 JSON。status=${result.status}\nstdout=${result.stdout}\nstderr=${result.stderr}`); }
   return { ...result, payload };
+}
+
+function runAsync(file, ...args) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [cliPath.pathname, "--file", file, "--json", ...args], { cwd: repoRoot.pathname });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", status => {
+      try { resolvePromise({ status, stdout, stderr, payload: JSON.parse(stdout) }); }
+      catch { reject(new Error(`CLI 未返回 JSON。status=${status}\nstdout=${stdout}\nstderr=${stderr}`)); }
+    });
+  });
 }
 
 test("status、assets、validate 和 url 提供稳定机器输出", async t => {
@@ -181,4 +199,71 @@ test("非法命令明确非零退出且不会损坏项目文件", async t => {
   assert.equal(unknown.status, 4);
   assert.equal(unknown.payload.error.code, "OBJECT_NOT_FOUND");
   assert.equal(await readFile(file, "utf8"), original);
+});
+
+test("validate 对无效工程返回稳定 validation result 和非零退出码", async t => {
+  const { file, cleanup } = await fixture();
+  t.after(cleanup);
+  const invalid = JSON.parse(await readFile(file, "utf8"));
+  invalid.project.name = "";
+  await writeFile(file, `${JSON.stringify(invalid)}\n`, "utf8");
+  const validation = run(file, "validate");
+  assert.equal(validation.status, 3);
+  assert.equal(validation.payload.ok, false);
+  assert.equal(validation.payload.result.valid, false);
+  assert.ok(validation.payload.result.errors.some(error => error.includes("project.name")));
+});
+
+test("旋转后的轴对齐包围盒参与房间越界 warning", async t => {
+  const { file, cleanup } = await fixture();
+  t.after(cleanup);
+  assert.equal(run(file, "object", "add", "bed", "--id", "edge-bed", "--position", "2,0,0").status, 0);
+  const rotated = run(file, "object", "update", "edge-bed", "--rotation", "45");
+  assert.equal(rotated.status, 0);
+  assert.deepEqual(rotated.payload.result.warnings, ["对象超出当前房间边界"]);
+  assert.ok(run(file, "object", "inspect", "edge-bed").payload.result.bounds.max.x > 3);
+});
+
+test("共享历史目录按工程绝对路径隔离同名文件", () => {
+  const previous = process.env.ROOMA_HISTORY_DIR;
+  process.env.ROOMA_HISTORY_DIR = "/tmp/rooma-history-tests";
+  try {
+    assert.notEqual(historyPathFor("/tmp/a/project.json"), historyPathFor("/tmp/b/project.json"));
+  } finally {
+    if (previous === undefined) delete process.env.ROOMA_HISTORY_DIR;
+    else process.env.ROOMA_HISTORY_DIR = previous;
+  }
+});
+
+test("遗留 journal 会在下一条命令前恢复工程和历史", async t => {
+  const { file, cleanup } = await fixture();
+  t.after(cleanup);
+  const next = JSON.parse(await readFile(file, "utf8"));
+  next.project.name = "已恢复事务";
+  const historyFile = historyPathFor(file);
+  const history = { schemaVersion: 1, undo: [{ description: "恢复前", project: JSON.parse(await readFile(file, "utf8")) }], redo: [] };
+  await writeFile(journalPathFor(file), `${JSON.stringify({ schemaVersion: 1, projectFile: file, historyFile, project: next, history })}\n`, "utf8");
+  const status = run(file, "status");
+  assert.equal(status.status, 0);
+  assert.equal(status.payload.result.name, "已恢复事务");
+  assert.deepEqual(JSON.parse(await readFile(historyFile, "utf8")), history);
+  await assert.rejects(readFile(journalPathFor(file), "utf8"), error => error?.code === "ENOENT");
+});
+
+test("并发 CLI 写操作通过工程锁串行化且不丢更新", async t => {
+  const { file, cleanup } = await fixture();
+  t.after(cleanup);
+  const results = await Promise.all(Array.from({ length: 10 }, () => runAsync(file, "measurements", "toggle")));
+  assert.ok(results.every(result => result.status === 0 && result.payload.ok === true));
+  assert.equal(JSON.parse(await readFile(file, "utf8")).project.measurementsVisible, false);
+  assert.equal(JSON.parse(await readFile(historyPathFor(file), "utf8")).undo.length, 10);
+});
+
+test("Web App URL 只允许 https 和本地环回 http", async t => {
+  const { file, cleanup } = await fixture();
+  t.after(cleanup);
+  assert.equal(run(file, "url", "--base", "http://localhost:3000/").status, 0);
+  const rejected = run(file, "url", "--base", "javascript:alert(1)");
+  assert.equal(rejected.status, 3);
+  assert.equal(rejected.payload.error.code, "INVALID_URL_PROTOCOL");
 });

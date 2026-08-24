@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { measureSpatialRelationships, movementForClearance, scaleForDimension, type Bounds3 } from "../lib/engine/spatial.ts";
+import { boundsForSizedObject, objectOutsideRoomBounds, spatialIssuesForObject } from "../lib/project-domain.js";
 
 const room: Bounds3 = { min: { x: 0, y: 0, z: 0 }, max: { x: 10, y: 3, z: 10 } };
 const selected: Bounds3 = { min: { x: 4, y: 0.5, z: 4 }, max: { x: 6, y: 1.5, z: 6 } };
@@ -34,4 +35,16 @@ test("calculates a stable scale factor for direct dimension edits", () => {
   assert.equal(scaleForDimension(2, 3), 1.5);
   assert.equal(scaleForDimension(0, 3), 1);
   assert.equal(scaleForDimension(2, 0), 0.005);
+});
+
+test("shared semantic bounds include rotation and report room/collision issues", () => {
+  const object = { id: "bed-1", label: "双人床", position: { x: 2, y: 0, z: 0 }, rotationY: 45, size: { x: 1.8, y: 1.05, z: 2.1 } };
+  const bounds = boundsForSizedObject(object);
+  assert.ok(bounds.max.x > 3);
+  assert.equal(objectOutsideRoomBounds({ width: 6, depth: 5.1, height: 3.05 }, object), true);
+  const issues = spatialIssuesForObject({ width: 6, depth: 5.1, height: 3.05 }, object, [
+    object,
+    { id: "chair-1", label: "休闲椅", position: { x: 1.2, y: 0, z: 0 }, rotationY: 0, size: { x: 1, y: 1, z: 1 } },
+  ]);
+  assert.deepEqual(issues.map(issue => issue.code).sort(), ["OBJECT_COLLISION", "OUTSIDE_ROOM"]);
 });

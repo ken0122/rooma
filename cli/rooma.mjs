@@ -23,7 +23,8 @@ import {
   movementForTargetClearance,
 } from "./core.mjs";
 import { getAsset } from "./catalogue.mjs";
-import { absoluteProjectPath, clearHistory, commitMutation, readProject, redoMutation, undoMutation } from "./storage.mjs";
+import { absoluteProjectPath, clearHistory, commitMutation, readProject, readProjectForValidation, redoMutation, undoMutation, withProjectLock } from "./storage.mjs";
+import { ROOM_LIMITS } from "../lib/project-domain.js";
 
 const HELP = `ROOMA CLI — 用命令操作 3D 室内布局项目
 
@@ -190,9 +191,9 @@ async function execute(file, args) {
 
   if (group === "validate") {
     if (action !== undefined) throw new CliError("TOO_MANY_ARGUMENTS", `多余参数：${[action, ...tail].join(" ")}`, 2);
-    const { project } = await readProject(file);
+    const { project } = await readProjectForValidation(file);
     const validation = validateProject(project);
-    return { command: "validate", changed: false, project, result: validation };
+    return { command: "validate", changed: false, project, result: validation, ok: validation.valid, exitCode: validation.valid ? 0 : 3 };
   }
 
   if (group === "url") {
@@ -340,8 +341,8 @@ async function execute(file, args) {
         project.project.room.name = name;
       }
       for (const field of ["width", "depth", "height"]) if (options[field] !== undefined) project.project.room[field] = parseNumber(optionValue(options, field), `--${field}`);
-      if (project.project.room.width <= 0 || project.project.room.depth <= 0) throw new CliError("INVALID_ROOM_SIZE", "房间宽度和深度必须大于 0", 3);
-      if (project.project.room.height < 1.8) throw new CliError("INVALID_ROOM_SIZE", "房间高度不能小于 1.8 m", 3);
+      if (project.project.room.width < ROOM_LIMITS.width.min || project.project.room.depth < ROOM_LIMITS.depth.min) throw new CliError("INVALID_ROOM_SIZE", `房间宽度和深度不能小于 ${ROOM_LIMITS.width.min} m`, 3);
+      if (project.project.room.height < ROOM_LIMITS.height.min) throw new CliError("INVALID_ROOM_SIZE", `房间高度不能小于 ${ROOM_LIMITS.height.min} m`, 3);
       const outside = project.objects.filter(object => objectOutsideRoom(project, object)).map(object => ({ id: object.id, label: object.label }));
       return { room: project.project.room, warnings: outside.length ? ["调整后有对象超出房间边界"] : [], outsideObjects: outside };
     }) };
@@ -416,10 +417,13 @@ async function main() {
   let globals = { json: process.argv.includes("--json") || process.argv.includes("-j"), file: resolve("rooma.project.json"), args: [] };
   try {
     globals = extractGlobals(process.argv.slice(2));
-    const outcome = await execute(globals.file, globals.args);
-    const payload = { ok: true, file: globals.file, ...outcome };
+    const commandNeedsProject = ![undefined, "help", "--help", "-h", "assets"].includes(globals.args[0]);
+    const outcome = commandNeedsProject ? await withProjectLock(globals.file, () => execute(globals.file, globals.args)) : await execute(globals.file, globals.args);
+    const payload = { ok: outcome.ok ?? true, file: globals.file, ...outcome };
     delete payload.project;
+    delete payload.exitCode;
     process.stdout.write(`${globals.json ? JSON.stringify(payload) : humanOutput(payload)}\n`);
+    if (outcome.exitCode) process.exitCode = outcome.exitCode;
   } catch (error) {
     const normalized = error instanceof CliError ? error : new CliError("INTERNAL_ERROR", error?.message || String(error), 1);
     const payload = { ok: false, error: { code: normalized.code, message: normalized.message, ...(normalized.details === undefined ? {} : { details: normalized.details }) }, file: globals.file };
