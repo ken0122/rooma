@@ -11,7 +11,7 @@ test("production CI/CD tests main and deploys the expected Worker", async () => 
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm run lint/);
   assert.match(workflow, /npm test/);
-  assert.match(workflow, /npx wrangler deploy/);
+  assert.match(workflow, /npx wrangler deploy \\\n\s+--config/);
   assert.match(workflow, /secrets\.CLOUDFLARE_API_TOKEN/);
   assert.match(workflow, /secrets\.CLOUDFLARE_ACCOUNT_ID/);
   assert.match(workflow, /--config dist\/server\/wrangler\.json/);
