@@ -84,6 +84,11 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /key === "h"/);
   assert.match(page, /ariaShortcut="T"/);
   assert.match(page, /ariaShortcut="H"/);
+  assert.match(page, /ariaShortcut="F"/);
+  assert.match(page, /纯净画布/);
+  assert.match(page, /keepMobileCanvasVisible/);
+  assert.match(page, /window\.addEventListener\("resize", keepMobileCanvasVisible\)/);
+  assert.match(page, /setFocusMode: active/);
   assert.match(page, /className="view-icons"/);
   assert.match(page, /className="color-swatches"/);
   assert.match(page, /new THREE\.Box3Helper/);
@@ -112,6 +117,8 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /className="view-guidance" role="status" aria-live="polite"/);
   assert.match(page, /蓝色.*红色.*绿色.*无色/s);
   assert.match(css, /@media \(max-width: 760px\)/);
+  assert.match(css, /\.app-shell\.focus-mode \{ grid-template-columns: minmax\(0, 1fr\); grid-template-rows: minmax\(0, 1fr\); \}/);
+  assert.match(css, /\.app-shell\.focus-mode \.focus-exit/);
   assert.match(css, /\.scene-object-list button \{ min-height: 44px; \}/);
   assert.match(css, /\.catalogue \{ grid-column: 1/);
   assert.match(css, /\.workspace \{ grid-column: 2/);

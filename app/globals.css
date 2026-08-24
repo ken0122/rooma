@@ -58,6 +58,21 @@ button { color: inherit; }
 .scene-canvas { touch-action: none; cursor: grab; outline: none; }
 .scene-canvas:focus-visible { outline: 3px solid var(--blue); outline-offset: -3px; }
 .scene-canvas:active { cursor: grabbing; }
+.focus-exit { display: none; }
+.app-shell.focus-mode { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.app-shell.focus-mode .topbar,
+.app-shell.focus-mode .catalogue,
+.app-shell.focus-mode .inspector,
+.app-shell.focus-mode .room-meta,
+.app-shell.focus-mode .view-guidance { display: none; }
+.app-shell.focus-mode .workspace { grid-column: 1; grid-row: 1; }
+.app-shell.focus-mode .display-controls { right: 22px; }
+.app-shell.focus-mode .focus-exit { position: absolute; top: 20px; right: 22px; z-index: 11; min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 9px 0 11px; border: 1px solid rgba(225,226,235,.95); border-radius: 10px; background: rgba(255,255,255,.94); color: #565a6d; box-shadow: 0 7px 20px rgba(31,35,70,.08); cursor: pointer; backdrop-filter: blur(8px); }
+.focus-exit svg { width: 16px; height: 16px; fill: none; stroke: var(--blue); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.focus-exit span { font-size: 9px; font-weight: 750; }
+.focus-exit kbd { min-width: 19px; height: 19px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: #f7f8fb; color: var(--muted); font-family: inherit; font-size: 8px; }
+.focus-exit:hover { color: var(--blue); background: white; }
+.focus-exit:focus-visible { outline: 2px solid #6675ef; outline-offset: 2px; }
 .view-guidance { position: absolute; left: 22px; bottom: 22px; z-index: 9; min-height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid rgba(225,226,235,.95); border-radius: 10px; background: rgba(255,255,255,.92); color: var(--muted); font-size: 9px; pointer-events: none; backdrop-filter: blur(8px); }
 .view-guidance b { color: var(--blue); font-size: 9px; white-space: nowrap; }
 .pointer-guidance, .touch-guidance { white-space: nowrap; }
@@ -178,6 +193,7 @@ button { color: inherit; }
 
 @media (max-width: 760px) {
   .app-shell, .app-shell.catalogue-closed, .app-shell.inspector-collapsed, .app-shell.catalogue-closed.inspector-collapsed, .app-shell.inspector-hidden, .app-shell.catalogue-closed.inspector-hidden { grid-template-columns: 1fr; grid-template-rows: 104px minmax(0, 1fr); }
+  .app-shell.focus-mode { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
   .topbar { grid-template-columns: 1fr auto; grid-template-rows: 58px 46px; gap: 0; padding: 0 14px; }
   .brand { grid-column: 1; grid-row: 1; }
   .project-title { display: none; }
@@ -191,13 +207,14 @@ button { color: inherit; }
   .catalogue.closed { width: 12px; box-shadow: none; }
   .catalogue-toggle { right: -15px; }
   .workspace { grid-column: 1; grid-row: 2; }
+  .app-shell.focus-mode .workspace { grid-column: 1; grid-row: 1; }
   .inspector { position: fixed; top: auto; left: 14px; right: 14px; bottom: 78px; width: auto; height: auto; max-height: 40dvh; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 42px rgba(31,35,70,.14); }
   .inspector-content { height: auto; padding: 13px; }
   .position-grid { grid-template-columns: repeat(4, minmax(58px, 1fr)); }
   .metric-grid { overflow-x: auto; }
-  .room-meta { left: 14px; top: 96px; }
-  .room-switcher { min-height: 36px; max-width: 190px; font-size: 28px; }
-  .room-meta p { max-width: 220px; flex-wrap: wrap; margin-top: 7px; gap: 4px 10px; }
+  .room-meta { left: 14px; top: 14px; max-width: calc(100% - 28px); padding: 9px 10px; border: 1px solid rgba(225,226,235,.92); border-radius: 11px; background: rgba(255,255,255,.9); backdrop-filter: blur(8px); }
+  .room-switcher { min-height: 30px; max-width: 190px; font-size: 24px; }
+  .room-meta p { max-width: 220px; flex-wrap: wrap; margin-top: 5px; gap: 4px 10px; }
   .room-meta p span + span::before { margin-right: 10px; }
   .display-controls { right: 14px; bottom: 14px; max-width: calc(100% - 28px); }
   .inspector.collapsed { left: auto; right: 0; top: 104px; bottom: 0; width: 12px; height: auto; max-height: none; border-radius: 0; box-shadow: none; }
@@ -209,4 +226,6 @@ button { color: inherit; }
   .touch-guidance { display: inline; }
   .project-notice { top: 112px; }
   .metric-input input { font-size: 16px; }
+  .app-shell.focus-mode .display-controls { right: 14px; bottom: 14px; }
+  .app-shell.focus-mode .focus-exit { top: 14px; right: 14px; }
 }

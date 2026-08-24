@@ -23,6 +23,7 @@ type SceneController = {
   setView: (mode: ViewMode) => void;
   setColorMode: (mode: ColorMode) => void;
   setMeasurementsVisible: (visible: boolean) => void;
+  setFocusMode: (active: boolean) => void;
   setPosition: (axis: Axis3, value: number) => void;
   setRotation: (value: number) => void;
   setDimension: (axis: Axis3, value: number) => void;
@@ -102,6 +103,7 @@ export default function Home() {
   const [objectCount, setObjectCount] = useState(DEFAULT_PROJECT.objects.length);
   const [catalogueOpen, setCatalogueOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [focusMode, setFocusMode] = useState(false);
   const inspectorOpenPreference = useRef(inspectorOpen);
   const [activeCategory, setActiveCategory] = useState<AssetCategory>("furniture");
   const [catalogueQuery, setCatalogueQuery] = useState("");
@@ -134,6 +136,15 @@ export default function Home() {
     window.addEventListener("hashchange", reloadProjectFromHash);
     return () => window.removeEventListener("hashchange", reloadProjectFromHash);
   }, []);
+
+  useEffect(() => {
+    const keepMobileCanvasVisible = () => {
+      if (window.innerWidth <= 760 && selectedObject && inspectorOpen) setCatalogueOpen(false);
+    };
+    keepMobileCanvasVisible();
+    window.addEventListener("resize", keepMobileCanvasVisible);
+    return () => window.removeEventListener("resize", keepMobileCanvasVisible);
+  }, [inspectorOpen, selectedObject]);
 
   useEffect(() => {
     const host = canvasHost.current;
@@ -284,6 +295,7 @@ export default function Home() {
     let currentToolMode: ToolMode = "select";
     let currentColorMode: ColorMode = initialProject.project.colorMode;
     let currentViewMode: ViewMode = initialProject.project.view;
+    let focusModeActive = false;
     let measurementTimer: ReturnType<typeof setTimeout> | null = null;
     const HISTORY_LIMIT = 100;
     const history = new ProjectHistory<RoomaObject>(HISTORY_LIMIT);
@@ -384,15 +396,15 @@ export default function Home() {
       return bounds;
     };
     const updateInteractionFeedback = () => {
-      selectedBounds.visible = Boolean(current);
+      selectedBounds.visible = !focusModeActive && Boolean(current);
       if (current) selectedBounds.box.copy(updateBounds(current)).expandByScalar(.035);
-      hoverBounds.visible = Boolean(hovered && hovered !== current);
+      hoverBounds.visible = !focusModeActive && Boolean(hovered && hovered !== current);
       if (hovered && hovered !== current) hoverBounds.box.copy(updateBounds(hovered)).expandByScalar(.055);
-      interactionPreview.visible = Boolean(hovered);
+      interactionPreview.visible = !focusModeActive && Boolean(hovered);
       movePreview.visible = currentToolMode === "translate";
       rotatePreview.visible = currentToolMode === "rotate";
       if (hovered) interactionPreview.position.copy(updateBounds(hovered).getCenter(new THREE.Vector3()));
-      renderer.domElement.style.cursor = hovered ? currentToolMode === "translate" ? "move" : currentToolMode === "rotate" ? "grab" : "pointer" : "default";
+      renderer.domElement.style.cursor = focusModeActive ? "grab" : hovered ? currentToolMode === "translate" ? "move" : currentToolMode === "rotate" ? "grab" : "pointer" : "default";
       scheduleRender(false);
     };
     const buildParametric = (group: THREE.Group, kind: string, requestedSize: Point3) => {
@@ -631,7 +643,7 @@ export default function Home() {
     let touchMoved = false;
     let touchGestureHadMultiple = false;
     const rootAt = (event: PointerEvent) => { const rect = renderer.domElement.getBoundingClientRect(); pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1); raycaster.setFromCamera(pointer, activeCamera); const hit = raycaster.intersectObjects([...pickTargets], false)[0]; return (hit?.object.userData.root as THREE.Group | undefined) || null; };
-    const pickAt = (event: PointerEvent) => select(rootAt(event));
+    const pickAt = (event: PointerEvent) => { if (!focusModeActive) select(rootAt(event)); };
     const onPointerDown = (event: PointerEvent) => {
       renderer.domElement.focus({ preventScroll: true });
       if (event.pointerType === "touch") {
@@ -739,6 +751,13 @@ export default function Home() {
       },
       setColorMode: mode => { currentColorMode = mode; const theme = sceneThemes[mode]; scene.background = new THREE.Color(theme.background); if (scene.fog instanceof THREE.Fog) scene.fog.color.setHex(theme.background); materials.furniture.color.setHex(theme.surface); materials.floor.color.setHex(theme.surface); materials.accent.color.setHex(theme.ink); materials.wall.color.setHex(theme.surface); materials.plant.color.setHex(theme.tint); sketchLineMaterial.color.setHex(theme.ink); selectedBoundsMaterial.color.setHex(theme.ink); hoverBoundsMaterial.color.setHex(theme.ink); rotationMaterial.color.setHex(theme.ink); (handle.material as THREE.MeshBasicMaterial).color.setHex(theme.ink); const gridMaterial = grid.material as THREE.LineBasicMaterial | THREE.LineBasicMaterial[]; const gridList = Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial]; gridList.forEach((material, index) => { material.color.setHex(index === 0 ? theme.ink : theme.grid); material.opacity = index === 0 ? 0.34 : 0.16; }); scheduleMeasurementRefresh(true); scheduleRender(true); persistScene(); },
       setMeasurementsVisible: visible => { measurementLayer.visible = visible; scheduleMeasurementRefresh(true); persistScene(); },
+      setFocusMode: active => {
+        focusModeActive = active;
+        transform.enabled = !active;
+        transform.getHelper().visible = !active && currentToolMode !== "select" && Boolean(current);
+        if (active) hovered = null;
+        updateInteractionFeedback();
+      },
       setPosition: (axis, value) => mutateCurrent(object => { object.position[axis] = value; }),
       setRotation: value => mutateCurrent(object => { object.rotation.y = THREE.MathUtils.degToRad(value); }),
       setDimension: (axis, value) => mutateCurrent(object => { const currentSize = object.userData.parametricSize as Point3; rebuildObject(object, { ...currentSize, [axis]: value }); }),
@@ -764,6 +783,7 @@ export default function Home() {
       if (key === "g") { setTool("translate"); api.setTool("translate"); }
       if (key === "r") { setTool("rotate"); api.setTool("rotate"); }
       if (key === "h" && !event.repeat) { const next = !measurementLayer.visible; setMeasurementsVisible(next); api.setMeasurementsVisible(next); }
+      if (key === "f" && !event.repeat) setFocusMode(active => !active);
       const shortcutView: ViewMode | undefined = key === "1" ? "2D" : key === "2" ? "3D" : key === "3" ? "ISO" : undefined;
       if (shortcutView && !event.repeat) { setView(shortcutView); api.setView(shortcutView); }
       if (key === "z" && (event.metaKey || event.ctrlKey)) { if (event.shiftKey) api.redo(); else api.undo(); }
@@ -777,6 +797,10 @@ export default function Home() {
       renderer.dispose(); renderer.domElement.remove(); controller.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    controller.current?.setFocusMode(focusMode);
+  }, [focusMode]);
 
   const changeTool = (next: ToolMode) => { setTool(next); controller.current?.setTool(next); };
   const changeView = (next: ViewMode) => { if (next === view) return; setView(next); controller.current?.setView(next); };
@@ -793,12 +817,12 @@ export default function Home() {
   const visibleAssets = PARAMETRIC_ASSETS.filter(asset => asset.category === activeCategory && (!normalizedQuery || `${asset.label} ${asset.kind}`.toLowerCase().includes(normalizedQuery)));
   const hasSelection = selectedObject !== null;
 
-  return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${hasSelection ? inspectorOpen ? "" : "inspector-collapsed" : "inspector-hidden"}`} data-color-mode={colorMode}>
+  return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${hasSelection ? inspectorOpen ? "" : "inspector-collapsed" : "inspector-hidden"} ${focusMode ? "focus-mode" : ""}`} data-color-mode={colorMode}>
     {/* THESIS: A working architectural model, not a dashboard; the room itself leads. OWN-WORLD: White drafting surface, single-color edges, sparse same-hue fills, precise compact controls. STORY: Choose an asset on the left, compose it on the canvas, then edit its properties on the right. FIRST VIEWPORT: A three-pane workbench with a left asset catalogue, central room canvas, right object inspector, and common tools in the topbar. FORM: SketchUp-style operating surface, pinned by the user's references; orthographic isometric staging. */}
-    <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className={`status-dot ${saveState}`} /><span className="project-name">{projectName}</span><small>{saveMessage}</small></div><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 6.8 16 2.1-6 6.1-2.2L5 3Z" /></svg></IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg></IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.8 9A8 8 0 0 0 5.4 6.2L4 8M5.2 15A8 8 0 0 0 18.6 17.8L20 16" /></svg></IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12M20 6v12M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg></IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" disabled={!canUndo} onClick={() => controller.current?.undo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" /></svg></IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" disabled={!canRedo} onClick={() => controller.current?.redo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" /></svg></IconButton><span className="local-mode">本地模式</span></div></header>
+    <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className={`status-dot ${saveState}`} /><span className="project-name">{projectName}</span><small>{saveMessage}</small></div><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 6.8 16 2.1-6 6.1-2.2L5 3Z" /></svg></IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg></IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.8 9A8 8 0 0 0 5.4 6.2L4 8M5.2 15A8 8 0 0 0 18.6 17.8L20 16" /></svg></IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12M20 6v12M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg></IconButton><IconButton label="纯净画布" shortcut="F" ariaShortcut="F" active={focusMode} onClick={() => setFocusMode(active => !active)}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4" /></svg></IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" disabled={!canUndo} onClick={() => controller.current?.undo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" /></svg></IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" disabled={!canRedo} onClick={() => controller.current?.redo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" /></svg></IconButton><span className="local-mode">本地模式</span></div></header>
     {projectNotice && <div className={`project-notice ${saveState === "error" ? "error" : ""}`} role="status"><span>{projectNotice}</span>{backupAvailable && <button onClick={restoreBackup}>恢复原草稿</button>}<button aria-label="关闭提示" onClick={() => setProjectNotice(null)}>×</button></div>}
     <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`} aria-label="参数化素材"><button className="catalogue-toggle" onClick={toggleCatalogue} aria-expanded={catalogueOpen} aria-label="展开或收起标模库">{catalogueOpen ? "‹" : "›"}</button>{catalogueOpen && <div className="catalogue-content"><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><div className="scene-object-section"><div><b>当前对象</b><span>{sceneObjects.length}</span></div><ul className="scene-object-list" aria-label="场景对象">{sceneObjects.map(object => <li key={object.id}><button aria-pressed={selectedObject?.id === object.id} className={selectedObject?.id === object.id ? "active" : ""} onClick={() => controller.current?.selectById(object.id)}><span>{object.label}</span><small>{object.id}</small></button></li>)}</ul></div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></div>}</aside>
-    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" shortcut="1" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" shortcut="2" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" shortcut="3" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><div className="room-switcher" aria-label="当前房间">{roomInfo.name}</div><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="view-guidance" role="status" aria-live="polite"><b>{VIEW_INTERACTIONS[view].label}</b><span className="pointer-guidance">{VIEW_INTERACTIONS[view].pointerHint} · 空格复位</span><span className="touch-guidance">{VIEW_INTERACTIONS[view].touchHint}</span></div></section>
+    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><button className="focus-exit" aria-label="退出纯净画布 · F" aria-keyshortcuts="F" onClick={() => setFocusMode(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg><span>退出纯净画布</span><kbd>F</kbd></button><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" shortcut="1" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" shortcut="2" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" shortcut="3" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><div className="room-switcher" aria-label="当前房间">{roomInfo.name}</div><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="view-guidance" role="status" aria-live="polite"><b>{VIEW_INTERACTIONS[view].label}</b><span className="pointer-guidance">{VIEW_INTERACTIONS[view].pointerHint} · 空格复位</span><span className="touch-guidance">{VIEW_INTERACTIONS[view].touchHint}</span></div></section>
     {hasSelection && <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selectedObject?.label}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
       {metrics.issues.length > 0 && <div className="spatial-warning" role="alert"><b>布局需要检查</b>{metrics.issues.map(issue => <span key={issue}>{issue}</span>)}</div>}
       <div className="inspector-section"><h3>位置与旋转</h3><div className="metric-grid position-grid">{AXES.map(axis => <div className="metric-cell" key={axis}><span>{axis.toUpperCase()}</span><MetricInput ariaLabel={`${axis.toUpperCase()} 位置`} value={metrics.position[axis]} onCommit={value => controller.current?.setPosition(axis, value)} /></div>)}<div className="metric-cell"><span>旋转 Y</span><MetricInput ariaLabel="Y 轴旋转" unit="°" step={1} value={metrics.rotationY} onCommit={value => controller.current?.setRotation(value)} /></div></div></div>
