@@ -58,7 +58,7 @@ test("status、assets、validate 和 url 提供稳定机器输出", async t => {
 
   const assets = run(file, "assets");
   assert.equal(assets.status, 0);
-  assert.equal(assets.payload.result.count, 16);
+  assert.equal(assets.payload.result.count, 17);
   assert.ok(assets.payload.result.assets.some(asset => asset.kind === "sofa"));
   const filtered = run(file, "assets", "--category", "bathroom", "--query", "马桶");
   assert.deepEqual(filtered.payload.result.assets.map(asset => asset.kind), ["toilet"]);

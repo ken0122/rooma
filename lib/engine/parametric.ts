@@ -1,4 +1,5 @@
 import type { Point3 } from "./spatial";
+import type { MountSurface } from "./mounting";
 import catalogue from "../../rooma.assets.json" with { type: "json" };
 
 export type AssetCategory = "architecture" | "furniture" | "kitchen" | "bathroom" | "decor";
@@ -8,6 +9,7 @@ export type ParametricAsset = {
   label: string;
   icon: string;
   category: AssetCategory;
+  defaultMount: { surface: MountSurface; elevation?: number };
   defaultSize: Point3;
   minSize: Point3;
   maxSize: Point3;

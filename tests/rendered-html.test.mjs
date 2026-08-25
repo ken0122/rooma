@@ -29,7 +29,7 @@ test("server-renders the ROOMA editor shell and social metadata", async () => {
   assert.match(html, /3D 室内设计画布/);
   assert.match(html, /主卫改造方案/);
   assert.match(html, /参数化标模/);
-  assert.match(html, /选择置入 · 尺寸可编辑/);
+  assert.match(html, /选择置入 · 默认吸附/);
   assert.doesNotMatch(html, /选中对象属性/);
   assert.match(html, /常用设计工具/);
   assert.match(html, /property="og:image"/);
@@ -62,6 +62,9 @@ test("keeps the editor performant, interactive, and responsive", async () => {
   assert.match(page, /new THREE\.EdgesGeometry/);
   assert.match(page, /sketchLineMaterial/);
   assert.match(page, /TransformControls/);
+  assert.match(page, /defaultMountedPosition/);
+  assert.match(page, /snapObjectToMount/);
+  assert.match(page, /拖拽仅沿吸附面移动/);
   assert.match(page, /OrbitControls/);
   assert.match(page, /viewControls\.touches\.ONE = null/);
   assert.match(page, /viewControls\.touches\.TWO = THREE\.TOUCH\.DOLLY_PAN/);
