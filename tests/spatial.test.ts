@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { measureSpatialRelationships, movementForClearance, scaleForDimension, type Bounds3 } from "../lib/engine/spatial.ts";
+import { clampPointToBounds, measureSpatialRelationships, movementForClearance, positionLimitsForBounds, scaleForDimension, type Bounds3 } from "../lib/engine/spatial.ts";
 import { boundsForSizedObject, objectOutsideRoomBounds, spatialIssuesForObject } from "../lib/project-domain.js";
 
 const room: Bounds3 = { min: { x: 0, y: 0, z: 0 }, max: { x: 10, y: 3, z: 10 } };
@@ -35,6 +35,25 @@ test("calculates a stable scale factor for direct dimension edits", () => {
   assert.equal(scaleForDimension(2, 3), 1.5);
   assert.equal(scaleForDimension(0, 3), 1);
   assert.equal(scaleForDimension(2, 0), 0.005);
+});
+
+test("derives object-origin limits that keep its current world bounds inside the room", () => {
+  const objectBounds: Bounds3 = { min: { x: 3.2, y: 0.5, z: 3.5 }, max: { x: 6.8, y: 1.5, z: 6.5 } };
+  const limits = positionLimitsForBounds(room, objectBounds, { x: 5, y: 0.5, z: 5 });
+  assert.ok(Math.abs(limits.min.x - 1.8) < Number.EPSILON * 2);
+  assert.deepEqual({ ...limits, min: { ...limits.min, x: 1.8 } }, { min: { x: 1.8, y: 0, z: 1.5 }, max: { x: 8.2, y: 2, z: 8.5 } });
+});
+
+test("clamps extreme or non-finite drag positions and centers oversized objects", () => {
+  const limits: Bounds3 = { min: { x: 1, y: 0, z: 2 }, max: { x: 9, y: 2, z: 8 } };
+  assert.deepEqual(
+    clampPointToBounds({ x: Number.POSITIVE_INFINITY, y: -99, z: Number.NaN }, limits, { x: 4, y: 1, z: 6 }),
+    { x: 4, y: 0, z: 6 },
+  );
+  assert.deepEqual(
+    positionLimitsForBounds(room, { min: { x: -1, y: 0, z: -1 }, max: { x: 11, y: 4, z: 11 } }, { x: 5, y: 2, z: 5 }),
+    { min: { x: 5, y: 1.5, z: 5 }, max: { x: 5, y: 1.5, z: 5 } },
+  );
 });
 
 test("shared semantic bounds include rotation and report room/collision issues", () => {

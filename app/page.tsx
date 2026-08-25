@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { AXES, measureSpatialRelationships, movementForClearance, type Axis3, type Bounds3, type Clearance, type Point3, type SpatialMetrics } from "@/lib/engine/spatial";
+import { AXES, clampPointToBounds, measureSpatialRelationships, movementForClearance, positionLimitsForBounds, type Axis3, type Bounds3, type Clearance, type Point3, type SpatialMetrics } from "@/lib/engine/spatial";
 import { RenderScheduler } from "@/lib/engine/render-scheduler";
 import { ProjectHistory } from "@/lib/engine/project-history";
 import { ASSET_CATEGORIES, PARAMETRIC_ASSETS, clampParametricSize, formatAssetSize, getParametricAsset, type AssetCategory } from "@/lib/engine/parametric";
@@ -114,6 +114,7 @@ export default function Home() {
   const [saveMessage, setSaveMessage] = useState("本地已保存");
   const [projectNotice, setProjectNotice] = useState<string | null>(null);
   const [backupAvailable, setBackupAvailable] = useState(false);
+  const [isTransforming, setIsTransforming] = useState(false);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -231,9 +232,11 @@ export default function Home() {
       }
       camera.updateProjectionMatrix();
     };
-    const transform = new TransformControls(activeCamera, renderer.domElement);
+    // The runtime exposes minX, while @types/three 0.185.4 misspells it as minx.
+    const transform = new TransformControls(activeCamera, renderer.domElement) as TransformControls & { minX: number };
     transform.setMode("translate");
-    transform.setSize(0.72);
+    transform.setSpace("world");
+    transform.setSize(0.86);
     scene.add(transform.getHelper());
 
     const selectedBounds = new THREE.Box3Helper(new THREE.Box3(), sceneThemes[initialProject.project.colorMode].ink);
@@ -300,6 +303,7 @@ export default function Home() {
     const HISTORY_LIMIT = 100;
     const history = new ProjectHistory<RoomaObject>(HISTORY_LIMIT);
     let dragBefore: RoomaObject | null = null;
+    let dragLimits: Bounds3 | null = null;
     const allocatedIds = new Set(initialProject.objects.map(object => object.id));
     const allocateId = (kind: string) => {
       let id = `${kind}-${serial++}`;
@@ -552,10 +556,18 @@ export default function Home() {
     };
     const scheduleMeasurementRefresh = (immediate = false) => { if (measurementTimer) clearTimeout(measurementTimer); if (immediate) refreshMeasurements(); else measurementTimer = setTimeout(refreshMeasurements, 70); };
     let persistScene = () => {};
+    const configureTransformLimits = (object: THREE.Group) => {
+      const origin = { x: object.position.x, y: object.position.y, z: object.position.z };
+      dragLimits = positionLimitsForBounds(roomBounds, toBounds3(updateBounds(object)), origin);
+      transform.minX = dragLimits.min.x; transform.maxX = dragLimits.max.x;
+      transform.minY = dragLimits.min.y; transform.maxY = dragLimits.max.y;
+      transform.minZ = dragLimits.min.z; transform.maxZ = dragLimits.max.z;
+    };
     const select = (object: THREE.Group | null) => {
       current = object;
       if (object) {
-        if (currentToolMode === "select") transform.detach(); else transform.attach(object);
+        if (currentToolMode === "select") transform.detach();
+        else { configureTransformLimits(object); transform.attach(object); }
         setSelectedObject({ id: object.userData.id as string, label: object.userData.label || "未命名对象" });
         setInspectorOpen(inspectorOpenPreference.current);
         if (window.innerWidth <= 760) setCatalogueOpen(false);
@@ -652,11 +664,14 @@ export default function Home() {
         if (touchPointers.size > 1) touchGestureHadMultiple = true;
         return;
       }
-      if (!dragging) pickAt(event);
+      if (!dragging && transform.axis === null) pickAt(event);
     };
     const onPointerMove = (event: PointerEvent) => {
       if (event.pointerType === "touch") { if (touchStartPoint && Math.hypot(event.clientX - touchStartPoint.x, event.clientY - touchStartPoint.y) > 8) touchMoved = true; return; }
-      if (dragging) return;
+      if (dragging || transform.axis !== null) {
+        if (hovered) { hovered = null; updateInteractionFeedback(); }
+        return;
+      }
       const next = rootAt(event);
       if (next !== hovered) { hovered = next; updateInteractionFeedback(); }
     };
@@ -673,10 +688,18 @@ export default function Home() {
     renderer.domElement.addEventListener("pointerup", onPointerEnd);
     renderer.domElement.addEventListener("pointercancel", onPointerEnd);
     renderer.domElement.addEventListener("pointerleave", onPointerLeave);
+    const finishTransformOutsideCanvas = () => {
+      if (!dragging) return;
+      transform.dragging = false;
+      transform.axis = null;
+    };
+    window.addEventListener("pointerup", finishTransformOutsideCanvas);
+    window.addEventListener("pointercancel", finishTransformOutsideCanvas);
     transform.addEventListener("dragging-changed", event => {
       dragging = Boolean(event.value);
+      setIsTransforming(dragging);
       controls.enabled = !dragging;
-      if (dragging && current) dragBefore = definitionOf(current);
+      if (dragging && current) { dragBefore = definitionOf(current); configureTransformLimits(current); }
       if (!dragging) {
         if (dragBefore && current) recordHistory(dragBefore, definitionOf(current));
         dragBefore = null;
@@ -685,7 +708,18 @@ export default function Home() {
       }
       scheduleRender(dragging);
     });
-    transform.addEventListener("objectChange", () => { if (current) updateBounds(current); updateInteractionFeedback(); scheduleMeasurementRefresh(false); scheduleRender(true); });
+    transform.addEventListener("objectChange", () => {
+      if (current) {
+        if (transform.mode === "translate" && dragLimits) {
+          const fallback = dragBefore?.position ?? { x: current.position.x, y: current.position.y, z: current.position.z };
+          const clamped = clampPointToBounds({ x: current.position.x, y: current.position.y, z: current.position.z }, dragLimits, fallback);
+          current.position.set(clamped.x, clamped.y, clamped.z);
+        }
+        updateBounds(current);
+      }
+      updateInteractionFeedback(); scheduleMeasurementRefresh(false); scheduleRender(true);
+    });
+    transform.addEventListener("change", () => scheduleRender(false));
     Object.values(controlsByView).forEach(viewControls => viewControls.addEventListener("change", () => scheduleRender(false)));
 
     const onResize = () => { const width = host.clientWidth; const height = host.clientHeight; if (!width || !height) return; const aspect = width / height; perspectiveCamera.aspect = aspect; perspectiveCamera.updateProjectionMatrix(); const viewHeight = 6.8; for (const camera of [orthographicCamera, isometricCamera]) { camera.left = -(viewHeight * aspect) / 2; camera.right = (viewHeight * aspect) / 2; camera.top = viewHeight / 2; camera.bottom = -viewHeight / 2; camera.updateProjectionMatrix(); } renderer.setSize(width, height, false); scheduleRender(false); };
@@ -732,7 +766,7 @@ export default function Home() {
         if (mode === "select") transform.detach();
         else {
           transform.setMode(mode);
-          if (current) transform.attach(current);
+          if (current) { configureTransformLimits(current); transform.attach(current); }
         }
         updateInteractionFeedback();
       },
@@ -777,6 +811,15 @@ export default function Home() {
       const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest("button, input, textarea, select, [contenteditable='true']")) return;
       const key = event.key.toLowerCase();
+      if (key === "escape" && dragging) {
+        event.preventDefault();
+        transform.reset();
+        transform.dragging = false;
+        transform.axis = null;
+        scheduleMeasurementRefresh(true);
+        scheduleRender(true);
+        return;
+      }
       if (event.code === "Space") { event.preventDefault(); api.reset(); }
       if (key === "delete" || key === "backspace") api.remove();
       if (key === "t") { setTool("select"); api.setTool("select"); }
@@ -791,7 +834,7 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
-      window.removeEventListener("keydown", onKeyDown); renderer.domElement.removeEventListener("pointerdown", onPointerDown); renderer.domElement.removeEventListener("pointermove", onPointerMove); renderer.domElement.removeEventListener("pointerup", onPointerEnd); renderer.domElement.removeEventListener("pointercancel", onPointerEnd); renderer.domElement.removeEventListener("pointerleave", onPointerLeave); resizeObserver.disconnect(); renderScheduler.dispose(); if (storageStatusFrame) cancelAnimationFrame(storageStatusFrame); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); Object.values(controlsByView).forEach(viewControls => viewControls.dispose()); transform.dispose();
+      window.removeEventListener("keydown", onKeyDown); window.removeEventListener("pointerup", finishTransformOutsideCanvas); window.removeEventListener("pointercancel", finishTransformOutsideCanvas); renderer.domElement.removeEventListener("pointerdown", onPointerDown); renderer.domElement.removeEventListener("pointermove", onPointerMove); renderer.domElement.removeEventListener("pointerup", onPointerEnd); renderer.domElement.removeEventListener("pointercancel", onPointerEnd); renderer.domElement.removeEventListener("pointerleave", onPointerLeave); resizeObserver.disconnect(); renderScheduler.dispose(); if (storageStatusFrame) cancelAnimationFrame(storageStatusFrame); if (measurementTimer) clearTimeout(measurementTimer); clearMeasurementLayer(); Object.values(controlsByView).forEach(viewControls => viewControls.dispose()); transform.dispose();
       const disposedGeometries = new Set<THREE.BufferGeometry>(); const disposedMaterials = new Set<THREE.Material>();
       scene.traverse(object => { const renderable = object as THREE.Mesh | THREE.Line | THREE.Sprite; if ("geometry" in renderable && renderable.geometry && !disposedGeometries.has(renderable.geometry)) { disposedGeometries.add(renderable.geometry); renderable.geometry.dispose(); } if ("material" in renderable && renderable.material) { const list = Array.isArray(renderable.material) ? renderable.material : [renderable.material]; list.forEach(material => { if (disposedMaterials.has(material)) return; disposedMaterials.add(material); const map = (material as THREE.MeshStandardMaterial).map; if (map) map.dispose(); material.dispose(); }); } });
       renderer.dispose(); renderer.domElement.remove(); controller.current = null;
@@ -816,13 +859,16 @@ export default function Home() {
   const normalizedQuery = catalogueQuery.trim().toLowerCase();
   const visibleAssets = PARAMETRIC_ASSETS.filter(asset => asset.category === activeCategory && (!normalizedQuery || `${asset.label} ${asset.kind}`.toLowerCase().includes(normalizedQuery)));
   const hasSelection = selectedObject !== null;
+  const interactionGuide = tool === "translate" && hasSelection
+    ? { label: isTransforming ? "移动中" : "移动对象", pointerHint: "拖动轴箭头或平面手柄 · Esc 取消 · 坐标实时同步", touchHint: "拖动手柄移动 · 双指调整视角" }
+    : VIEW_INTERACTIONS[view];
 
   return <main className={`app-shell ${catalogueOpen ? "" : "catalogue-closed"} ${hasSelection ? inspectorOpen ? "" : "inspector-collapsed" : "inspector-hidden"} ${focusMode ? "focus-mode" : ""}`} data-color-mode={colorMode}>
     {/* THESIS: A working architectural model, not a dashboard; the room itself leads. OWN-WORLD: White drafting surface, single-color edges, sparse same-hue fills, precise compact controls. STORY: Choose an asset on the left, compose it on the canvas, then edit its properties on the right. FIRST VIEWPORT: A three-pane workbench with a left asset catalogue, central room canvas, right object inspector, and common tools in the topbar. FORM: SketchUp-style operating surface, pinned by the user's references; orthographic isometric staging. */}
     <header className="topbar"><div className="brand">ROOMA</div><div className="project-title"><span className={`status-dot ${saveState}`} /><span className="project-name">{projectName}</span><small>{saveMessage}</small></div><nav className="top-tools" aria-label="常用设计工具"><IconButton label="选择对象" shortcut="T" ariaShortcut="T" active={tool === "select"} onClick={() => changeTool("select")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 6.8 16 2.1-6 6.1-2.2L5 3Z" /></svg></IconButton><IconButton label="移动对象" shortcut="G" ariaShortcut="G" active={tool === "translate"} onClick={() => changeTool("translate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg></IconButton><IconButton label="旋转对象" shortcut="R" ariaShortcut="R" active={tool === "rotate"} onClick={() => changeTool("rotate")}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M18.8 9A8 8 0 0 0 5.4 6.2L4 8M5.2 15A8 8 0 0 0 18.6 17.8L20 16" /></svg></IconButton><span className="tool-divider" /><IconButton label="隐藏/显示空间标注" shortcut="H" ariaShortcut="H" active={measurementsVisible} onClick={toggleMeasurements}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6v12M20 6v12M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3" /></svg></IconButton><IconButton label="纯净画布" shortcut="F" ariaShortcut="F" active={focusMode} onClick={() => setFocusMode(active => !active)}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M4 16v4h4" /></svg></IconButton></nav><div className="top-actions"><IconButton label="撤销" shortcut="⌘/Ctrl + Z" ariaShortcut="Meta+Z Control+Z" disabled={!canUndo} onClick={() => controller.current?.undo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M5 12h8a6 6 0 0 1 6 6" /></svg></IconButton><IconButton label="重做" shortcut="⇧⌘/Ctrl + Z" ariaShortcut="Meta+Shift+Z Control+Shift+Z" disabled={!canRedo} onClick={() => controller.current?.redo()}><svg className="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5M19 12h-8a6 6 0 0 0-6 6" /></svg></IconButton><span className="local-mode">本地模式</span></div></header>
     {projectNotice && <div className={`project-notice ${saveState === "error" ? "error" : ""}`} role="status"><span>{projectNotice}</span>{backupAvailable && <button onClick={restoreBackup}>恢复原草稿</button>}<button aria-label="关闭提示" onClick={() => setProjectNotice(null)}>×</button></div>}
     <aside className={`catalogue ${catalogueOpen ? "open" : "closed"}`} aria-label="参数化素材"><button className="catalogue-toggle" onClick={toggleCatalogue} aria-expanded={catalogueOpen} aria-label="展开或收起标模库">{catalogueOpen ? "‹" : "›"}</button>{catalogueOpen && <div className="catalogue-content"><div className="panel-heading"><div><span>参数化标模</span><small>选择置入 · 尺寸可编辑</small></div><span className="asset-count">{PARAMETRIC_ASSETS.length}</span></div><label className="catalogue-search"><span>⌕</span><input value={catalogueQuery} onChange={event => setCatalogueQuery(event.target.value)} placeholder="搜索标模" aria-label="搜索标模" /></label><div className="category-tabs" role="tablist" aria-label="标模分类">{ASSET_CATEGORIES.map(category => <button role="tab" aria-selected={activeCategory === category.id} className={activeCategory === category.id ? "active" : ""} key={category.id} onClick={() => setActiveCategory(category.id)}>{category.label}</button>)}</div><div className="asset-list">{visibleAssets.map(item => <button className="asset-row" key={item.kind} onClick={() => controller.current?.add(item.kind, item.label)}><span className="asset-icon">{item.icon}</span><span className="asset-copy"><b>{item.label}</b><small>{formatAssetSize(item.defaultSize)}</small></span><span className="parametric-badge">参数化</span><i>＋</i></button>)}{visibleAssets.length === 0 && <div className="asset-empty">没有匹配的标模</div>}</div><div className="scene-object-section"><div><b>当前对象</b><span>{sceneObjects.length}</span></div><ul className="scene-object-list" aria-label="场景对象">{sceneObjects.map(object => <li key={object.id}><button aria-pressed={selectedObject?.id === object.id} className={selectedObject?.id === object.id ? "active" : ""} onClick={() => controller.current?.selectById(object.id)}><span>{object.label}</span><small>{object.id}</small></button></li>)}</ul></div><button className="upload-asset" disabled title="下一阶段支持 GLB / glTF">＋ 导入自定义模型</button></div>}</aside>
-    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><button className="focus-exit" aria-label="退出纯净画布 · F" aria-keyshortcuts="F" onClick={() => setFocusMode(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg><span>退出纯净画布</span><kbd>F</kbd></button><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" shortcut="1" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" shortcut="2" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" shortcut="3" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><div className="room-switcher" aria-label="当前房间">{roomInfo.name}</div><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="view-guidance" role="status" aria-live="polite"><b>{VIEW_INTERACTIONS[view].label}</b><span className="pointer-guidance">{VIEW_INTERACTIONS[view].pointerHint} · 空格复位</span><span className="touch-guidance">{VIEW_INTERACTIONS[view].touchHint}</span></div></section>
+    <section className="workspace" aria-label="3D 室内设计画布"><div ref={canvasHost} className="canvas-host" /><button className="focus-exit" aria-label="退出纯净画布 · F" aria-keyshortcuts="F" onClick={() => setFocusMode(false)}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5" /></svg><span>退出纯净画布</span><kbd>F</kbd></button><div className="display-controls" aria-label="场景显示设置"><div className="view-icons" role="group" aria-label="视图模式"><ViewButton label="2D 平面" shortcut="1" active={view === "2D"} onClick={() => changeView("2D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-2.5 8h-14L5 8Z" /></svg></ViewButton><ViewButton label="3D 透视" shortcut="2" active={view === "3D"} onClick={() => changeView("3D")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h10v10H5V7Zm10 0 4-2v10l-4 2M15 7l4-2H9L5 7" /></svg></ViewButton><ViewButton label="等轴测" shortcut="3" active={view === "ISO"} onClick={() => changeView("ISO")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 4 7 4v8l-7 4-7-4V8l7-4Zm0 8 7-4M12 12 5 8M12 12v8" /></svg></ViewButton></div><span className="display-divider" /> <div className="color-swatches" role="group" aria-label="线稿颜色">{COLOR_MODES.map(mode => <button key={mode.id} className={colorMode === mode.id ? "active" : ""} aria-label={`${mode.label}线稿`} aria-pressed={colorMode === mode.id} title={`${mode.label}线稿`} onClick={() => changeColorMode(mode.id)}><i style={{ background: mode.color }} /></button>)}</div></div><div className="room-meta"><div className="room-switcher" aria-label="当前房间">{roomInfo.name}</div><p><span>{(roomInfo.width * roomInfo.depth).toFixed(1)} m²</span><span>{roomInfo.height.toFixed(2)} m 层高</span><span>{objectCount} 个对象</span></p></div><div className="view-guidance" role="status" aria-live="polite"><b>{interactionGuide.label}</b><span className="pointer-guidance">{interactionGuide.pointerHint}{tool === "translate" && hasSelection ? "" : " · 空格复位"}</span><span className="touch-guidance">{interactionGuide.touchHint}</span></div></section>
     {hasSelection && <section className={`inspector ${inspectorOpen ? "open" : "collapsed"}`} aria-label="选中对象属性"><button className="inspector-toggle" onClick={toggleInspector} aria-expanded={inspectorOpen} aria-label="展开或收起属性栏">{inspectorOpen ? "›" : "‹"}</button>{inspectorOpen && <div className="inspector-content"><div className="selection-title"><span>当前选择 · 参数化标模</span><b>{selectedObject?.label}</b><small>输入数值后按 Enter 或点击外部应用</small></div>{metrics ? <>
       {metrics.issues.length > 0 && <div className="spatial-warning" role="alert"><b>布局需要检查</b>{metrics.issues.map(issue => <span key={issue}>{issue}</span>)}</div>}
       <div className="inspector-section"><h3>位置与旋转</h3><div className="metric-grid position-grid">{AXES.map(axis => <div className="metric-cell" key={axis}><span>{axis.toUpperCase()}</span><MetricInput ariaLabel={`${axis.toUpperCase()} 位置`} value={metrics.position[axis]} onCommit={value => controller.current?.setPosition(axis, value)} /></div>)}<div className="metric-cell"><span>旋转 Y</span><MetricInput ariaLabel="Y 轴旋转" unit="°" step={1} value={metrics.rotationY} onCommit={value => controller.current?.setRotation(value)} /></div></div></div>

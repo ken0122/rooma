@@ -125,3 +125,30 @@ export function scaleForDimension(currentSize: number, targetSize: number) {
   if (!Number.isFinite(currentSize) || currentSize <= 0) return 1;
   return Math.max(0.01, targetSize) / currentSize;
 }
+
+export function positionLimitsForBounds(room: Bounds3, objectBounds: Bounds3, origin: Point3): Bounds3 {
+  const limits = { min: {} as Point3, max: {} as Point3 };
+
+  for (const axis of AXES) {
+    const minimum = room.min[axis] + origin[axis] - objectBounds.min[axis];
+    const maximum = room.max[axis] + origin[axis] - objectBounds.max[axis];
+    if (minimum <= maximum) {
+      limits.min[axis] = minimum;
+      limits.max[axis] = maximum;
+    } else {
+      const centered = (minimum + maximum) / 2;
+      limits.min[axis] = centered;
+      limits.max[axis] = centered;
+    }
+  }
+
+  return limits;
+}
+
+export function clampPointToBounds(point: Point3, limits: Bounds3, fallback: Point3): Point3 {
+  return Object.fromEntries(AXES.map(axis => {
+    const fallbackValue = Number.isFinite(fallback[axis]) ? fallback[axis] : 0;
+    const value = Number.isFinite(point[axis]) ? point[axis] : fallbackValue;
+    return [axis, Math.max(limits.min[axis], Math.min(limits.max[axis], value))];
+  })) as Point3;
+}
